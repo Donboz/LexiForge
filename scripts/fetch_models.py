@@ -59,7 +59,13 @@ def is_valid_key(api_key: str) -> bool:
 
 def fetch_google(api_key: str) -> List[Dict[str, Any]]:
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-    req = urllib.request.Request(url, headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+    )
     with urllib.request.urlopen(req, timeout=10.0) as r:
         res = json.loads(r.read().decode("utf-8"))
         models = res.get("models", [])
@@ -106,7 +112,8 @@ def fetch_openai_compat(base_url: str, api_key: str) -> List[Dict[str, Any]]:
         url,
         headers={
             "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
     )
     with urllib.request.urlopen(req, timeout=10.0) as r:
