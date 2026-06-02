@@ -34,9 +34,10 @@ from handlers.fallback_chain import load_config
 
 def is_text_model(model_id: str) -> bool:
     mid = model_id.lower()
-    # Exclude embeddings, audio, vision-only, or moderation models
+    # Exclude embeddings, audio, vision, image, and text-to-speech models
     exclude_keywords = [
-        "embed", "moderation", "whisper", "tts", "speech", "audio", "similarity", "rerank", "bge-"
+        "embed", "moderation", "whisper", "tts", "speech", "audio", "similarity", "rerank", "bge-",
+        "image", "clip", "lyria", "video"
     ]
     for kw in exclude_keywords:
         if kw in mid:
@@ -47,7 +48,6 @@ def is_text_model(model_id: str) -> bool:
 def is_valid_key(api_key: str) -> bool:
     if not api_key:
         return False
-    # Check for placeholder strings
     key_upper = api_key.upper()
     if "YOUR_" in key_upper or "API_KEY" in key_upper or "TOKEN" in key_upper:
         return False
@@ -70,8 +70,8 @@ def fetch_google(api_key: str) -> List[Dict[str, Any]]:
             else:
                 model_id = name
             
-            # Check if it supports text-based generation
-            if "generateContent" in m.get("supportedGenerationMethods", []):
+            # Check if it supports text-based generation and is a text model
+            if "generateContent" in m.get("supportedGenerationMethods", []) and is_text_model(model_id):
                 out.append({
                     "id": model_id,
                     "context_length": int(m.get("inputTokenLimit", 0))
@@ -79,8 +79,7 @@ def fetch_google(api_key: str) -> List[Dict[str, Any]]:
         return out
 
 
-def fetch_openai_compat(base_url: str, api_key: str, provider_key: str) -> List[Dict[str, Any]]:
-    # Correct slash formatting in base_url
+def fetch_openai_compat(base_url: str, api_key: str) -> List[Dict[str, Any]]:
     url = base_url
     if not url.endswith("/models"):
         if url.endswith("/v1"):
@@ -106,7 +105,6 @@ def fetch_openai_compat(base_url: str, api_key: str, provider_key: str) -> List[
             if not model_id or not is_text_model(model_id):
                 continue
             
-            # Extract context length if returned by API
             context = 0
             if "context_length" in m:
                 context = int(m.get("context_length") or 0)
@@ -117,7 +115,9 @@ def fetch_openai_compat(base_url: str, api_key: str, provider_key: str) -> List[
                 
             out.append({
                 "id": model_id,
-                "context_length": context
+                "context_length": context,
+                "pricing": m.get("pricing"),
+                "providers": m.get("providers")
             })
         return out
 
@@ -127,7 +127,6 @@ def main():
     config = load_config()
     providers = config.get("api_providers", {})
     
-    # Provider mapping config details
     openai_compat_configs = {
         "github": "https://models.inference.ai.azure.com",
         "deepseek": "https://api.deepseek.com/v1",
@@ -159,25 +158,78 @@ def main():
                 provider_models = fetch_google(api_key)
             elif provider in openai_compat_configs:
                 base_url = openai_compat_configs[provider]
-                provider_models = fetch_openai_compat(base_url, api_key, provider)
+                provider_models = fetch_openai_compat(base_url, api_key)
             else:
                 print(f"Unknown provider type / Bilinmeyen sağlayıcı türü: {provider}")
                 continue
                 
             if provider_models:
-                # Sort models by context length descending, then by name alphabetically
-                sorted_models = sorted(provider_models, key=lambda x: (-int(x.get("context_length") or 0), x.get("id")))
+                free_list = []
+                paid_list = []
                 
-                # Extract only IDs for models.json output
+                # Fetch provider rate limit from config
+                rate_limit_val = pcfg.get("rate_limit_rpm")
+                rate_limit_str = f"{rate_limit_val} RPM" if rate_limit_val else "N/A"
+                
+                for m in provider_models:
+                    model_id = m["id"]
+                    context = int(m.get("context_length") or 0)
+                    
+                    # ─── Dynamic Categorization Logic / Dinamik Sınıflandırma Mantığı ───
+                    is_free = False
+                    if provider == "google":
+                        # Gemini flash and lite are free, pro is paid
+                        is_free = not ("pro" in model_id.lower())
+                    elif provider == "openrouter":
+                        pricing = m.get("pricing") or {}
+                        prompt_price = float(pricing.get("prompt", 0) or 0)
+                        completion_price = float(pricing.get("completion", 0) or 0)
+                        is_free = (prompt_price == 0.0 and completion_price == 0.0) or model_id.endswith(":free")
+                    elif provider == "huggingface":
+                        providers_list = m.get("providers") or []
+                        is_free = True
+                        if providers_list:
+                            pricing = providers_list[0].get("pricing") or {}
+                            input_price = float(pricing.get("input", 0) or 0)
+                            output_price = float(pricing.get("output", 0) or 0)
+                            if input_price > 0.0 or output_price > 0.0:
+                                is_free = False
+                    elif provider in ("github", "groq", "cerebras", "sambanova"):
+                        is_free = True
+                    elif provider == "opencode":
+                        is_free = ("free" in model_id.lower())
+                    elif provider == "mistral":
+                        is_free = not ("large" in model_id.lower() or "medium" in model_id.lower() or "codestral" in model_id.lower())
+                    elif provider == "deepseek":
+                        is_free = False
+                        
+                    # Structure output objects
+                    if is_free:
+                        free_list.append({
+                            "id": model_id,
+                            "context_length": context,
+                            "rate_limit": rate_limit_str
+                        })
+                    else:
+                        paid_list.append({
+                            "id": model_id,
+                            "context_length": context
+                        })
+                
+                # Sort free and paid lists by context length descending, then by name alphabetically
+                sorted_free = sorted(free_list, key=lambda x: (-x["context_length"], x["id"]))
+                sorted_paid = sorted(paid_list, key=lambda x: (-x["context_length"], x["id"]))
+                
                 models_db[provider] = {
-                    "models": [m["id"] for m in sorted_models]
+                    "free": sorted_free,
+                    "paid": sorted_paid
                 }
                 
-                print(f"  [SUCCESS] Found {len(sorted_models)} text models for {provider} / {provider} için {len(sorted_models)} adet metin modeli bulundu.")
-                for m in sorted_models[:5]:
-                    print(f"    - {m['id']} (Context: {m['context_length']})")
-                if len(sorted_models) > 5:
-                    print(f"    - ... and {len(sorted_models)-5} more / ve {len(sorted_models)-5} tane daha.")
+                print(f"  [SUCCESS] Found {len(sorted_free)} free, {len(sorted_paid)} paid models for {provider}")
+                if sorted_free:
+                    print(f"    Free: {sorted_free[0]['id']} (Context: {sorted_free[0]['context_length']})")
+                if sorted_paid:
+                    print(f"    Paid: {sorted_paid[0]['id']} (Context: {sorted_paid[0]['context_length']})")
             else:
                 print(f"  [Warning] No text models found for / Hiç model bulunamadı: {provider}")
         except Exception as e:
