@@ -80,6 +80,18 @@ def fetch_google(api_key: str) -> List[Dict[str, Any]]:
         return out
 
 
+def find_context_value(d: Dict[str, Any]) -> int:
+    for k, v in d.items():
+        k_lower = k.lower()
+        if "context_length" in k_lower or "context_lenght" in k_lower or "context_window" in k_lower or "context_windows" in k_lower:
+            try:
+                if v is not None:
+                    return int(v)
+            except (ValueError, TypeError):
+                pass
+    return 0
+
+
 def fetch_openai_compat(base_url: str, api_key: str) -> List[Dict[str, Any]]:
     url = base_url
     if not url.endswith("/models"):
@@ -106,19 +118,16 @@ def fetch_openai_compat(base_url: str, api_key: str) -> List[Dict[str, Any]]:
             if not model_id or not is_text_model(model_id):
                 continue
             
-            context = 0
-            if "context_length" in m:
-                context = int(m.get("context_length") or 0)
-            elif "context_window" in m:
-                context = int(m.get("context_window") or 0)
-            elif "providers" in m: # Hugging Face Router API format
+            context = find_context_value(m)
+            if not context and "providers" in m:  # Hugging Face Router API format
                 providers = m.get("providers", [])
-                if providers:
-                    provider_obj = providers[0]
-                    if "context_length" in provider_obj:
-                        context = int(provider_obj.get("context_length") or 0)
-                    elif "context_window" in provider_obj:
-                        context = int(provider_obj.get("context_window") or 0)
+                if isinstance(providers, list):
+                    for provider_obj in providers:
+                        if isinstance(provider_obj, dict):
+                            val = find_context_value(provider_obj)
+                            if val:
+                                context = val
+                                break
                 
             out.append({
                 "id": model_id,
