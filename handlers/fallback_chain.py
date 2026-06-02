@@ -160,9 +160,9 @@ def query_deepseek(prompt: str, api_key: str, model: str,
 
 def query_huggingface(prompt: str, api_key: str, model: str,
                       temperature: float = 0.2, max_tokens: int = 4096) -> str:
-    """Hugging Face Serverless Inference API query / Hugging Face API sorgusu."""
+    """Hugging Face Router API query / Hugging Face Router API sorgusu."""
     return query_openai_compat(prompt, api_key, model,
-                               "https://api-inference.huggingface.co/v1",
+                               "https://router.huggingface.co/v1",
                                temperature, max_tokens)
 
 

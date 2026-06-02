@@ -58,14 +58,13 @@ Create a file named `config.json` inside the `config/` directory with the follow
       "enabled": false,
       "api_key": "YOUR_HUGGINGFACE_TOKEN",
       "models": [
+        "meta-llama/Llama-3.1-8B-Instruct:novita",
         "Qwen/Qwen2.5-7B-Instruct",
-        "meta-llama/Llama-3.2-3B-Instruct",
-        "meta-llama/Llama-3.1-8B-Instruct",
-        "google/gemma-2-9b-it"
+        "meta-llama/Llama-3.2-3B-Instruct"
       ],
       "rate_limit_rpm": 20,
       "max_concurrent": 2,
-      "_comment": "Hugging Face Serverless Inference API (Free tier)"
+      "_comment": "Hugging Face Router API"
     },
     "openrouter": {
       "enabled": true,
@@ -175,10 +174,10 @@ Create a file named `config.json` inside the `config/` directory with the follow
 ### 3. `api_providers`
 * **EN**: List of API endpoints, keys, models list, concurrency, and rate-limits. Set `"enabled": true` to include a provider in the active fallback chain.
   * **DeepSeek**: Connects to `https://api.deepseek.com` endpoint using OpenAI-compatible queries.
-  * **Hugging Face**: Connects to the Serverless Inference API at `https://api-inference.huggingface.co` without downloading any model weights locally.
+  * **Hugging Face**: Connects to the Hugging Face Router API at `https://router.huggingface.co/v1` without downloading any model weights locally.
 * **TR**: API adresleri, anahtarlar, modeller listesi, eşzamanlılık ve istek sınırları listesi. Bir sağlayıcıyı aktif fallback zincirine dahil etmek için `"enabled": true` yapın.
   * **DeepSeek**: OpenAI uyumlu sorgular kullanarak `https://api.deepseek.com` adresine bağlanır.
-  * **Hugging Face**: Yerel diskinize herhangi bir model indirmeden doğrudan `https://api-inference.huggingface.co` adresindeki Serverless Inference API'ye bağlanır.
+  * **Hugging Face**: Yerel diskinize herhangi bir model indirmeden doğrudan `https://router.huggingface.co/v1` adresindeki Hugging Face Router API'ye bağlanır.
 
 ### 4. `languages`
 * **EN**: Key-value pairs mapping language codes (e.g. `"DE"`) to their full names (e.g. `"Almanca"`).
