@@ -115,6 +115,10 @@ def fetch_openai_compat(base_url: str, api_key: str) -> List[Dict[str, Any]]:
         out = []
         for m in data_list:
             model_id = m.get("id")
+            # For GitHub Models, use the friendly name field (e.g. Meta-Llama-3.1-8B-Instruct)
+            if "inference.ai.azure.com" in base_url and m.get("name"):
+                model_id = m.get("name")
+                
             if not model_id or not is_text_model(model_id):
                 continue
             
