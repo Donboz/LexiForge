@@ -368,23 +368,24 @@ class FallbackChain:
         """
         self.stats["total_calls"] += 1
 
-        # Decrement rate limit ban rounds / Rate limit engel turlarını azalt
-        for tracker in self.trackers:
-            if tracker.rate_limit_ban_rounds > 0:
-                tracker.rate_limit_ban_rounds -= 1
-
         retry_round = 0
         while True:
             retry_round += 1
             self._emit_event("INFO", "fallback_round_started", retry_round=retry_round, context=context or {})
 
-            # Sınır kontrolü
-            if self.max_retries_per_page > 0 and retry_round > self.max_retries_per_page:
-                print(f"\033[1;31m  [Fallback] FAILED: Tried {self.max_retries_per_page} rounds, no model worked. / "
-                      f"BAŞARISIZ: {self.max_retries_per_page} tur denendi, hiçbir model çalışmadı.\033[0m")
+            # Decrement rate limit ban rounds per retry round / Rate limit engel turlarını her tur başında azalt
+            for tracker in self.trackers:
+                if tracker.rate_limit_ban_rounds > 0:
+                    tracker.rate_limit_ban_rounds -= 1
+
+            # Sınır kontrolü (Sınırsız ayarlansa bile sonsuz döngüyü önlemek için varsayılan limit 5 turdur)
+            max_limit = self.max_retries_per_page if self.max_retries_per_page > 0 else 5
+            if retry_round > max_limit:
+                print(f"\033[1;31m  [Fallback] FAILED: Tried {max_limit} rounds, no model worked. / "
+                      f"BAŞARISIZ: {max_limit} tur denendi, hiçbir model çalışmadı.\033[0m")
                 self._emit_event("ERROR", "fallback_rounds_exhausted",
                                   retry_round=retry_round,
-                                  max_retries_per_page=self.max_retries_per_page,
+                                  max_retries_per_page=max_limit,
                                   context=context or {})
                 return None
 
