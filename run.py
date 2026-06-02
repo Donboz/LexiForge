@@ -29,7 +29,8 @@ CHOICES = [
     "7. Clean Meanings / Anlamları Temizle (clean_meanings)",
     "8. Splitter / Ayırıcı (splitter)",
     "9. Test Redis Connection / Redis Bağlantı Testi (test_redis)",
-    "10. Quit / Çıkış (quit)",
+    "10. Fetch Models / Modelleri Güncelle (fetch_models)",
+    "11. Quit / Çıkış (quit)",
 ]
 
 
@@ -76,6 +77,7 @@ def main():
         "merge": [sys.executable, os.path.join("scripts", "merge_translated.py")],
         "clean_meanings": [sys.executable, os.path.join("scripts", "clean_meanings.py")],
         "splitter": [sys.executable, os.path.join("scripts", "splitter.py")],
+        "fetch_models": [sys.executable, os.path.join("scripts", "fetch_models.py")],
     }
 
     key = None
@@ -95,6 +97,8 @@ def main():
         key = "merge"
     elif "splitter" in choice:
         key = "splitter"
+    elif "fetch_models" in choice:
+        key = "fetch_models"
 
     cmd = mapping.get(key) if key else None
     if not cmd:
