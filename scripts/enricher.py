@@ -245,7 +245,7 @@ For each entry in the input array, perform the following steps:
    Audit and correct the following fields if they are present and incorrect, or fill them if missing:
    - `term`: Fix any spelling mistakes, typos, casing, or possessive forms.
    - `article`: German nouns must have 'der', 'die', or 'das' corresponding to their gender. Correct if wrong.
-   - `definitions[].meaning`: Ensure accurate dictionary translation.
+   - `definitions[].meaning`: Ensure accurate dictionary translation. If the input `meaning` contains multiple comma-separated translations representing distinct nuances or concepts (e.g., "zihin, ruh" for "Geist"), split them into separate definition objects in the `"definitions"` array, and generate a distinct example sentence (example_source, example_target), domain, and usage note for each.
    - `definitions[].domain`: Ensure appropriate domains from the database list: GENERAL, MEDICAL, LEGAL, TECHNICAL, ACADEMIC, PHILOSOPHY, BUSINESS, LITERARY, LITERATURE, SCIENCE, POLITICS, RELIGION, MILITARY, SPORTS, MUSIC, ART, ARCHITECTURE, GASTRONOMY, AGRICULTURE, MATHEMATICS, CHEMISTRY, PHYSICS, BIOLOGY, GEOGRAPHY, HISTORY, PSYCHOLOGY, SOCIOLOGY, EDUCATION, LINGUISTICS, COMPUTER_SCIENCE, ECONOMICS, ENGINEERING, ENVIRONMENTAL, MEDIA, FASHION, TRANSPORT, COLLOQUIAL, SLANG, FORMAL, ARCHAIC, ASTRONOMY, MEDICINE, PHARMACY, THEOLOGY, ANATOMY, ZOOLOGY, BOTANY, MINERALOGY, METEOROLOGY, ELECTRONICS, TELECOMMUNICATIONS, AVIATION, MARITIME, AUTOMOTIVE, TEXTILE, PRINTING, PHOTOGRAPHY, CINEMA, THEATER, DANCE, CUISINE, TOURISM, DIPLOMACY, PEDAGOGY, RHETORIC, MYTHOLOGY.
 
 3. COORDINATE SPLITTING:
