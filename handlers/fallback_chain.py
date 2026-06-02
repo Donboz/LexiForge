@@ -158,6 +158,14 @@ def query_deepseek(prompt: str, api_key: str, model: str,
                                temperature, max_tokens)
 
 
+def query_huggingface(prompt: str, api_key: str, model: str,
+                      temperature: float = 0.2, max_tokens: int = 4096) -> str:
+    """Hugging Face Serverless Inference API query / Hugging Face API sorgusu."""
+    return query_openai_compat(prompt, api_key, model,
+                               "https://api-inference.huggingface.co/v1",
+                               temperature, max_tokens)
+
+
 # Provider key → query function mapping / Sağlayıcı anahtarı → sorgu fonksiyonu eşleşmesi
 PROVIDER_QUERY_FNS = {
     "openrouter": query_openrouter,
@@ -169,6 +177,7 @@ PROVIDER_QUERY_FNS = {
     "google": query_google,
     "github": query_github,
     "deepseek": query_deepseek,
+    "huggingface": query_huggingface,
 }
 
 

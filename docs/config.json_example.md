@@ -43,6 +43,30 @@ Create a file named `config.json` inside the `config/` directory with the follow
       "rate_limit_rpm": 15,
       "max_concurrent": 2
     },
+    "deepseek": {
+      "enabled": true,
+      "api_key": "YOUR_DEEPSEEK_API_KEY",
+      "models": [
+        "deepseek-v4-flash",
+        "deepseek-v4-pro"
+      ],
+      "rate_limit_rpm": 60,
+      "max_concurrent": 4,
+      "_comment": "DeepSeek official API."
+    },
+    "huggingface": {
+      "enabled": false,
+      "api_key": "YOUR_HUGGINGFACE_TOKEN",
+      "models": [
+        "Qwen/Qwen2.5-7B-Instruct",
+        "meta-llama/Llama-3.2-3B-Instruct",
+        "meta-llama/Llama-3.1-8B-Instruct",
+        "google/gemma-2-9b-it"
+      ],
+      "rate_limit_rpm": 20,
+      "max_concurrent": 2,
+      "_comment": "Hugging Face Serverless Inference API (Free tier)"
+    },
     "openrouter": {
       "enabled": true,
       "api_key": "YOUR_OPENROUTER_API_KEY",
@@ -106,11 +130,14 @@ Create a file named `config.json` inside the `config/` directory with the follow
     "provider_order": [
       "google",
       "github",
+      "deepseek",
       "openrouter",
+      "opencode",
       "cerebras",
       "groq",
       "sambanova",
-      "mistral"
+      "mistral",
+      "huggingface"
     ],
     "retry_delay_sec": 10,
     "max_total_failures_before_abort": 0,
@@ -126,8 +153,8 @@ Create a file named `config.json` inside the `config/` directory with the follow
       "source": "EN",
       "target": "TR",
       "domain": "GENERAL",
-      "provider": "groq",
-      "model": "llama-3.3-70b-versatile"
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash"
     }
   }
 }
@@ -147,7 +174,11 @@ Create a file named `config.json` inside the `config/` directory with the follow
 
 ### 3. `api_providers`
 * **EN**: List of API endpoints, keys, models list, concurrency, and rate-limits. Set `"enabled": true` to include a provider in the active fallback chain.
+  * **DeepSeek**: Connects to `https://api.deepseek.com` endpoint using OpenAI-compatible queries.
+  * **Hugging Face**: Connects to the Serverless Inference API at `https://api-inference.huggingface.co` without downloading any model weights locally.
 * **TR**: API adresleri, anahtarlar, modeller listesi, eşzamanlılık ve istek sınırları listesi. Bir sağlayıcıyı aktif fallback zincirine dahil etmek için `"enabled": true` yapın.
+  * **DeepSeek**: OpenAI uyumlu sorgular kullanarak `https://api.deepseek.com` adresine bağlanır.
+  * **Hugging Face**: Yerel diskinize herhangi bir model indirmeden doğrudan `https://api-inference.huggingface.co` adresindeki Serverless Inference API'ye bağlanır.
 
 ### 4. `languages`
 * **EN**: Key-value pairs mapping language codes (e.g. `"DE"`) to their full names (e.g. `"Almanca"`).
