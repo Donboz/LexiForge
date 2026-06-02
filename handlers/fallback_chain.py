@@ -150,6 +150,14 @@ def query_opencode(prompt: str, api_key: str, model: str,
                                temperature, max_tokens)
 
 
+def query_deepseek(prompt: str, api_key: str, model: str,
+                   temperature: float = 0.2, max_tokens: int = 4096) -> str:
+    """DeepSeek API query / DeepSeek API sorgusu."""
+    return query_openai_compat(prompt, api_key, model,
+                               "https://api.deepseek.com/v1",
+                               temperature, max_tokens)
+
+
 # Provider key → query function mapping / Sağlayıcı anahtarı → sorgu fonksiyonu eşleşmesi
 PROVIDER_QUERY_FNS = {
     "openrouter": query_openrouter,
@@ -160,6 +168,7 @@ PROVIDER_QUERY_FNS = {
     "mistral": query_mistral,
     "google": query_google,
     "github": query_github,
+    "deepseek": query_deepseek,
 }
 
 
