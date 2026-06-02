@@ -23,8 +23,9 @@ data/translated/
 data/progress/
 data/logs/
 
-# Configuration secrets
+# Configuration secrets and fetched models
 config/config.json
+config/models/
 
 # Orjson and file-save temporary files
 *.tmp

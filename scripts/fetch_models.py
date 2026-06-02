@@ -5,11 +5,12 @@ Glossa Models Fetcher / Glossa Model Güncelleyici
 ===============================================
 Queries active providers in config.json to fetch all text-capable models,
 estimates/retrieves their context length, sorts them descending, and saves
-the structured results to config/models.json.
+the structured results to separate JSON files inside config/models/ directory.
 
 config.json'daki aktif sağlayıcıları sorgulayarak metin işleme özellikli
 tüm modelleri çeker, context uzunluklarını bulur/tahmin eder, büyükten küçüğe
-sıralar ve yapılandırılmış sonucu config/models.json dosyasına kaydeder.
+sıralar ve yapılandırılmış sonucu config/models/ dizini altındaki ayrı JSON dosyalarına kaydeder.
+
 """
 
 import os
@@ -74,7 +75,7 @@ def fetch_google(api_key: str) -> List[Dict[str, Any]]:
             if "generateContent" in m.get("supportedGenerationMethods", []) and is_text_model(model_id):
                 out.append({
                     "id": model_id,
-                    "context_length": int(m.get("inputTokenLimit", 0))
+                    "context": int(m.get("inputTokenLimit", 0))
                 })
         return out
 
@@ -108,14 +109,20 @@ def fetch_openai_compat(base_url: str, api_key: str) -> List[Dict[str, Any]]:
             context = 0
             if "context_length" in m:
                 context = int(m.get("context_length") or 0)
+            elif "context_window" in m:
+                context = int(m.get("context_window") or 0)
             elif "providers" in m: # Hugging Face Router API format
                 providers = m.get("providers", [])
                 if providers:
-                    context = int(providers[0].get("context_length") or 0)
+                    provider_obj = providers[0]
+                    if "context_length" in provider_obj:
+                        context = int(provider_obj.get("context_length") or 0)
+                    elif "context_window" in provider_obj:
+                        context = int(provider_obj.get("context_window") or 0)
                 
             out.append({
                 "id": model_id,
-                "context_length": context,
+                "context": context,
                 "pricing": m.get("pricing"),
                 "providers": m.get("providers")
             })
@@ -126,6 +133,16 @@ def main():
     print("Loading config.json... / config.json yükleniyor...")
     config = load_config()
     providers = config.get("api_providers", {})
+    
+    # Delete old models.json if it exists
+    old_models_path = os.path.join("config", "models.json")
+    if os.path.exists(old_models_path):
+        try:
+            os.remove(old_models_path)
+            print("Removed old monolithic models.json / Eski tek parça models.json silindi.")
+        except Exception as e:
+            print(f"Warning: Could not remove old models.json: {e}")
+
     
     openai_compat_configs = {
         "github": "https://models.inference.ai.azure.com",
@@ -138,8 +155,6 @@ def main():
         "sambanova": "https://api.sambanova.ai/v1",
         "mistral": "https://api.mistral.ai/v1",
     }
-    
-    models_db = {}
     
     for provider, pcfg in providers.items():
         if not pcfg.get("enabled", True):
@@ -173,7 +188,7 @@ def main():
                 
                 for m in provider_models:
                     model_id = m["id"]
-                    context = int(m.get("context_length") or 0)
+                    context = int(m.get("context") or 0)
                     
                     # ─── Dynamic Categorization Logic / Dinamik Sınıflandırma Mantığı ───
                     is_free = False
@@ -207,45 +222,38 @@ def main():
                     if is_free:
                         free_list.append({
                             "id": model_id,
-                            "context_length": context,
+                            "context": context,
                             "rate_limit": rate_limit_str
                         })
                     else:
                         paid_list.append({
                             "id": model_id,
-                            "context_length": context
+                            "context": context
                         })
                 
-                # Sort free and paid lists by context length descending, then by name alphabetically
-                sorted_free = sorted(free_list, key=lambda x: (-x["context_length"], x["id"]))
-                sorted_paid = sorted(paid_list, key=lambda x: (-x["context_length"], x["id"]))
+                # Sort free and paid lists by context descending, then by name alphabetically
+                sorted_free = sorted(free_list, key=lambda x: (-x["context"], x["id"]))
+                sorted_paid = sorted(paid_list, key=lambda x: (-x["context"], x["id"]))
                 
-                models_db[provider] = {
+                provider_db = {
                     "free": sorted_free,
                     "paid": sorted_paid
                 }
                 
-                print(f"  [SUCCESS] Found {len(sorted_free)} free, {len(sorted_paid)} paid models for {provider}")
-                if sorted_free:
-                    print(f"    Free: {sorted_free[0]['id']} (Context: {sorted_free[0]['context_length']})")
-                if sorted_paid:
-                    print(f"    Paid: {sorted_paid[0]['id']} (Context: {sorted_paid[0]['context_length']})")
+                # Write to separate JSON file per provider inside config/models/
+                models_dir = os.path.join("config", "models")
+                os.makedirs(models_dir, exist_ok=True)
+                output_path = os.path.join(models_dir, f"{provider}.json")
+                with open(output_path, "w", encoding="utf-8") as f:
+                    json.dump(provider_db, f, indent=2, ensure_ascii=False)
+                
+                print(f"  [SUCCESS] Wrote {len(sorted_free)} free and {len(sorted_paid)} paid models to config/models/{provider}.json")
             else:
                 print(f"  [Warning] No text models found for / Hiç model bulunamadı: {provider}")
         except Exception as e:
             print(f"  [FAILED] Error fetching models for {provider} / {provider} modelleri alınırken hata: {e}")
             
-    if models_db:
-        output_path = os.path.join("config", "models.json")
-        print(f"\nWriting results to / Sonuçlar şuraya yazılıyor: {output_path}...")
-        try:
-            with open(output_path, "w", encoding="utf-8") as f:
-                json.dump(models_db, f, indent=2, ensure_ascii=False)
-            print("\033[1;32m[SUCCESS] models.json successfully updated! / models.json başarıyla güncellendi!\033[0m")
-        except Exception as e:
-            print(f"\033[1;31m[ERROR] Failed to save models.json / models.json dosyasına yazma başarısız oldu: {e}\033[0m")
-    else:
-        print("\n\033[1;31m[Warning] No models fetched from any provider. models.json was not updated. / Hiçbir sağlayıcıdan model çekilemedi. models.json güncellenmedi.\033[0m")
+    print("\nModel fetching and split-saving completed. / Model çekme ve ayrı kaydetme tamamlandı.")
 
 
 if __name__ == "__main__":
