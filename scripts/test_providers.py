@@ -103,19 +103,48 @@ def test_mistral(api_key, model):
     from mistralai.client import Mistral
     client = Mistral(api_key=api_key)
     start = time.time()
-    response = client.chat.complete(
-        model=model,
-        messages=[{"role": "user", "content": "Say exactly 'OK'"}],
-        temperature=0.1,
-        max_tokens=150
-    )
+    
+    content = None
+    try:
+        inputs = [{"role": "user", "content": "Say exactly 'OK'"}]
+        completion_args = {
+            "temperature": 0.1,
+            "max_tokens": 150
+        }
+        response = client.beta.conversations.start(
+            inputs=inputs,
+            model=model,
+            completion_args=completion_args,
+        )
+        
+        texts = []
+        if hasattr(response, 'outputs') and response.outputs:
+            for output in response.outputs:
+                if hasattr(output, 'content') and output.content:
+                    if isinstance(output.content, str):
+                        texts.append(output.content)
+                    elif isinstance(output.content, list):
+                        for chunk in output.content:
+                            if hasattr(chunk, 'text') and chunk.text:
+                                texts.append(chunk.text)
+        content = "".join(texts)
+    except Exception as e:
+        # Fallback to chat.complete
+        response = client.chat.complete(
+            model=model,
+            messages=[{"role": "user", "content": "Say exactly 'OK'"}],
+            temperature=0.1,
+            max_tokens=150
+        )
+        content = response.choices[0].message.content
+
     latency = time.time() - start
-    content = response.choices[0].message.content
     if not content or not content.strip():
         raise ValueError("Mistral returned None content / Mistral boş içerik döndürdü")
     text = content.strip()
     print(f"  [SUCCESS / BAŞARILI] Mistral: '{text}' (took/sürdü {latency:.2f}s)")
     return text
+
 
 def test_google(api_key, model):
     print("Testing / Test ediliyor: Google...")

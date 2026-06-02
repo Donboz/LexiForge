@@ -103,16 +103,50 @@ def query_mistral(prompt: str, api_key: str, model: str,
     """Mistral API query using official mistralai SDK / Mistral resmi SDK kullanarak Mistral API sorgusu."""
     from mistralai.client import Mistral
     client = Mistral(api_key=api_key)
-    response = client.chat.complete(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=temperature,
-        max_tokens=max_tokens
-    )
-    content = response.choices[0].message.content
+    
+    content = None
+    try:
+        # Try using Mistral SDK v2.0 beta conversations API format
+        # (Mistral SDK v2.0 beta conversations API formatını dene)
+        inputs = [{"role": "user", "content": prompt}]
+        completion_args = {
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+        response = client.beta.conversations.start(
+            inputs=inputs,
+            model=model,
+            completion_args=completion_args,
+        )
+        
+        # Extract text response from conversation outputs
+        # (Konuşma çıktılarından metin yanıtını ayıkla)
+        texts = []
+        if hasattr(response, 'outputs') and response.outputs:
+            for output in response.outputs:
+                if hasattr(output, 'content') and output.content:
+                    if isinstance(output.content, str):
+                        texts.append(output.content)
+                    elif isinstance(output.content, list):
+                        for chunk in output.content:
+                            if hasattr(chunk, 'text') and chunk.text:
+                                texts.append(chunk.text)
+        content = "".join(texts)
+    except Exception as e:
+        # Graceful fallback to standard stateless completions
+        # (Standart chat.complete modeline geri dön)
+        response = client.chat.complete(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        content = response.choices[0].message.content
+
     if not content or not content.strip():
         raise ValueError(f"Mistral API returned empty content for model {model} / Mistral API {model} modeli için boş yanıt döndürdü")
     return content.strip()
+
 
 
 def query_google(prompt: str, api_key: str, model: str,
