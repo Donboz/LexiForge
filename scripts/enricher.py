@@ -237,6 +237,8 @@ For each entry in the input array, perform the following steps:
    - A book metadata/imprint entry leaked from the book structure.
    - A page number or stray numeric reference.
    - A standalone single character or punctuation.
+   - Contact details (phone numbers, emails, websites, address blocks, social handles).
+   - Publisher info or publishing/printing metadata (e.g., "x yayınları", "yayıncılık", "basımevi", copyright warnings, ISBN codes, etc.).
    If `"isValid": false`, provide a clear explanation in Turkish in the `"reason"` field.
 
 2. CORRECT EXISTING FIELDS:
@@ -267,14 +269,19 @@ For each entry in the input array, perform the following steps:
    - `conjugation`: A JSON object detailing the verb conjugation table or null if not a verb.
    - `isRegular`: boolean (true/false) indicating if verb is regular, or null.
    - `isSeparable`: boolean (true/false) indicating if verb is separable, or null.
-   - `isReflexive`: boolean (true/false) indicating if verb is reflexive, or null.
+   - `isReflexive`: boolean (true/false) indicating if verb is reflexive, or null. Note: Check both the `term` and the provided definitions. If a definition includes a reflexive pronoun (like 'sich' in German, or similar in other languages) or indicates a reflexive meaning/usage, capture it here.
    - `verbPrefix`: separable prefix of the verb (e.g. "ab", "auf") or null.
    - `pronunciation`: IPA pronunciation string or null.
    - `syllables`: Hyphenated syllables (e.g. "A·bend·es·sen") or null.
    - `level`: Language level (A1, A2, B1, B2, C1, C2, UNKNOWN).
    - `etymology`: Short text explaining the origin of the word (in Turkish) or null.
    - `declension`: A JSON object of the noun or adjective declension table (cases: Nominative, Accusative, Dative, Genitive for Singular and Plural) or null.
-   - `caseMatrix`: A JSON array of case mappings (e.g. [[{{"prep": "an", "case": "Akk", "meaning": "to think of"}}]]) or null.
+   - `caseMatrix`: A JSON array of case mappings or null. If the verb is reflexive, governs a preposition, or has specific case requirements, add them here. Each object must have:
+     - `reflexive`: The reflexive pronoun (e.g., "sich", "myself", or null).
+     - `reflexiveCase`: The case of the reflexive pronoun (e.g., "Akk", "Dat", or null).
+     - `prep`: Preposition governed by the verb (e.g., "an", "auf", "mit", or null).
+     - `case`: Case governed by the preposition/verb (e.g., "Akk", "Dat", or null).
+     - `meaning`: Turkish translation/meaning of this usage.
    - `semanticRelations`: A JSON object representing multilingual semantic relations or null.
    - `synonyms`: An array of synonyms or null.
    - `antonyms`: An array of antonyms or null.
@@ -314,7 +321,7 @@ JSON Schema for the output array:
         "level": "A1 | A2 | B1 | B2 | C1 | C2 | UNKNOWN",
         "etymology": "Türkçe köken açıklaması veya null",
         "declension": {{ ... }} or null,
-        "caseMatrix": [ {{ "prep": "...", "case": "...", "meaning": "..." }} ] or null,
+        "caseMatrix": [ {{ "reflexive": "sich | myself | null", "reflexiveCase": "Akk | Dat | null", "prep": "prep or null", "case": "case of prep or null", "meaning": "Turkish meaning of this usage" }} ] or null,
         "semanticRelations": {{ ... }} or null,
         "synonyms": ["syn1", "syn2"] or null,
         "antonyms": ["ant1", "ant2"] or null,
