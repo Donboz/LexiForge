@@ -1,0 +1,31 @@
+# Python bytecode & cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# Redis Database Dump
+dump.rdb
+
+# Environment variables
+.env
+
+# Project specific data directories (ignoring outputs, logs, and progress)
+data/json/
+data/merged/
+data/translated/
+data/progress/
+data/logs/
+
+# Configuration secrets
+config/config.json
+
+# Orjson and file-save temporary files
+*.tmp
+*.jsonl
