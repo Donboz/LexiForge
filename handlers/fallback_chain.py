@@ -159,6 +159,43 @@ def query_huggingface(prompt: str, api_key: str, model: str,
                                temperature, max_tokens)
 
 
+def query_nvidia(prompt: str, api_key: str, model: str,
+                 temperature: float = 0.2, max_tokens: int = 4096) -> str:
+    """NVIDIA NIM API query / NVIDIA NIM API sorgusu."""
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key, base_url="https://integrate.api.nvidia.com/v1")
+    
+    extra_body = {}
+    if "deepseek" in model.lower():
+        extra_body = {
+            "chat_template_kwargs": {
+                "thinking": True,
+                "reasoning_effort": "high"
+            }
+        }
+        top_p = 0.95
+    else:
+        top_p = 0.9
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+        max_tokens=max_tokens,
+        top_p=top_p,
+        extra_body=extra_body if extra_body else None
+    )
+
+    reasoning = getattr(response.choices[0].message, "reasoning", None) or getattr(response.choices[0].message, "reasoning_content", None)
+    if reasoning:
+        print(f"\n\033[1;35m[NVIDIA NIM - {model} Reasoning / Düşünme Süreci]:\n{reasoning}\033[0m\n")
+
+    content = response.choices[0].message.content
+    if not content or not content.strip():
+        raise ValueError(f"NVIDIA NIM API returned empty content for model {model} / NVIDIA NIM API {model} modeli için boş yanıt döndürdü")
+    return content.strip()
+
+
 # Provider key → query function mapping / Sağlayıcı anahtarı → sorgu fonksiyonu eşleşmesi
 PROVIDER_QUERY_FNS = {
     "openrouter": query_openrouter,
@@ -171,6 +208,7 @@ PROVIDER_QUERY_FNS = {
     "github": query_github,
     "deepseek": query_deepseek,
     "huggingface": query_huggingface,
+    "nvidia": query_nvidia,
 }
 
 

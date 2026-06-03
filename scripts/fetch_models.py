@@ -163,7 +163,6 @@ def main():
         except Exception as e:
             print(f"Warning: Could not remove old models.json: {e}")
 
-    
     openai_compat_configs = {
         "github": "https://models.inference.ai.azure.com",
         "deepseek": "https://api.deepseek.com/v1",
@@ -174,6 +173,7 @@ def main():
         "groq": "https://api.groq.com/openai/v1",
         "sambanova": "https://api.sambanova.ai/v1",
         "mistral": "https://api.mistral.ai/v1",
+        "nvidia": "https://integrate.api.nvidia.com/v1",
     }
     
     for provider, pcfg in providers.items():
@@ -228,14 +228,14 @@ def main():
                             input_price = float(pricing.get("input", 0) or 0)
                             output_price = float(pricing.get("output", 0) or 0)
                             if input_price > 0.0 or output_price > 0.0:
-                                is_free = False
+                                 is_free = False
                     elif provider in ("github", "groq", "cerebras", "sambanova"):
                         is_free = True
                     elif provider == "opencode":
                         is_free = ("free" in model_id.lower())
                     elif provider == "mistral":
                         is_free = not ("large" in model_id.lower() or "medium" in model_id.lower() or "codestral" in model_id.lower())
-                    elif provider == "deepseek":
+                    elif provider == "deepseek" or provider == "nvidia":
                         is_free = False
                         
                     # Structure output objects

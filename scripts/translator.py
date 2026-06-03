@@ -337,6 +337,7 @@ async def main_async():
     parser.add_argument("--batch-size", type=int, help="Batch size for single query")
     parser.add_argument("--provider", help="Filter by a specific provider (openrouter, cerebras, groq, google, github, sambanova, mistral)")
     parser.add_argument("--model", help="Filter by a specific model")
+    parser.add_argument("--semaphore", type=int, default=10, help="Max concurrent requests (Semaphore)")
     args = parser.parse_args()
 
     # ── Interactive Selector Imports ──
@@ -428,6 +429,13 @@ async def main_async():
                 print("Invalid value. Batch size set to 30 / Geçersiz değer. Paket boyutu 30 olarak belirlendi.")
 
     batch_size = args.batch_size if args.batch_size else 30
+
+    if "--semaphore" not in sys.argv:
+        try:
+            sem_input = input("Enter max concurrent requests (Semaphore) (Default 10) / Maksimum eş zamanlı istek sayısını (Semaphore) girin (Varsayılan 10): ").strip()
+            args.semaphore = int(sem_input) if sem_input else 10
+        except ValueError:
+            args.semaphore = 10
 
     # ── Redis Connection & Interactive Selector ──
     redis_enabled = False
@@ -769,7 +777,7 @@ async def main_async():
 
         # Step 3: Batching / Akıllı Paketleme
         batches = [pending_api_items[i:i + batch_size] for i in range(0, len(pending_api_items), batch_size)]
-        sem = asyncio.Semaphore(10)
+        sem = asyncio.Semaphore(args.semaphore)
         save_lock = asyncio.Lock()
         
         last_save_time = time.time()

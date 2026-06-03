@@ -412,6 +412,7 @@ async def main_async():
     parser.add_argument("--provider", help="Filter by a specific provider (openrouter, cerebras, groq, google, github, sambanova, mistral)")
     parser.add_argument("--model", help="Filter by a specific model")
     parser.add_argument("--skip-existing", action="store_true", help="Skip already enriched terms (default: False)")
+    parser.add_argument("--semaphore", type=int, default=8, help="Max concurrent requests (Semaphore)")
     args = parser.parse_args()
 
     from handlers.selector import select_item_interactive, select_boolean_interactive, select_file_interactive
@@ -510,6 +511,13 @@ async def main_async():
             except ValueError:
                 args.batch_size = 30
                 print("Invalid value. Defaulting to 30. / Geçersiz değer. Paket boyutu 30 olarak belirlendi.")
+
+    if "--semaphore" not in sys.argv:
+        try:
+            sem_input = input("Enter max concurrent requests (Semaphore) (Default 8) / Maksimum eş zamanlı istek sayısını (Semaphore) girin (Varsayılan 8): ").strip()
+            args.semaphore = int(sem_input) if sem_input else 8
+        except ValueError:
+            args.semaphore = 8
 
     redis_enabled = False
     redis_client = None
@@ -673,7 +681,7 @@ async def main_async():
                 pending_api_idx.append(idx)
 
         batches = [pending_api_items[i:i + batch_size] for i in range(0, len(pending_api_items), batch_size)]
-        sem = asyncio.Semaphore(8)
+        sem = asyncio.Semaphore(args.semaphore)
 
         async def enrich_batch_with_split(batch_items, depth=0):
             if not batch_items:

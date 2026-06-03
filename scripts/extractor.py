@@ -350,6 +350,7 @@ async def main_async():
     parser.add_argument("--max-pages", type=int, default=0, help="Max pages to process")
     parser.add_argument("--provider", help="Filter by a specific provider (openrouter, cerebras, groq, google, github, sambanova, mistral)")
     parser.add_argument("--model", help="Filter by a specific model")
+    parser.add_argument("--semaphore", type=int, default=8, help="Max concurrent requests (Semaphore)")
     args = parser.parse_args()
 
     from handlers.selector import select_item_interactive, select_boolean_interactive, select_file_interactive
@@ -439,6 +440,13 @@ async def main_async():
                 args.max_pages = int(mp) if mp else 0
             except ValueError:
                 args.max_pages = 0
+
+    if "--semaphore" not in sys.argv:
+        try:
+            sem_input = input("Enter max concurrent requests (Semaphore) (Default 8) / Maksimum eş zamanlı istek sayısını (Semaphore) girin (Varsayılan 8): ").strip()
+            args.semaphore = int(sem_input) if sem_input else 8
+        except ValueError:
+            args.semaphore = 8
 
     redis_enabled = False
     redis_client = None
@@ -681,7 +689,7 @@ async def main_async():
             if page_num not in processed_pages:
                 pending_pages.append((page_num, page_text))
 
-        sem = asyncio.Semaphore(8)
+        sem = asyncio.Semaphore(args.semaphore)
         file_lock = asyncio.Lock()
         
         accumulated_terms = []
