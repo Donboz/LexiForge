@@ -164,26 +164,13 @@ def query_nvidia(prompt: str, api_key: str, model: str,
     """NVIDIA NIM API query / NVIDIA NIM API sorgusu."""
     from openai import OpenAI
     client = OpenAI(api_key=api_key, base_url="https://integrate.api.nvidia.com/v1")
-    
-    extra_body = {}
-    if "deepseek" in model.lower():
-        extra_body = {
-            "chat_template_kwargs": {
-                "thinking": True,
-                "reasoning_effort": "high"
-            }
-        }
-        top_p = 0.95
-    else:
-        top_p = 0.9
 
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=temperature,
         max_tokens=max_tokens,
-        top_p=top_p,
-        extra_body=extra_body if extra_body else None
+        top_p=0.9
     )
 
     reasoning = getattr(response.choices[0].message, "reasoning", None) or getattr(response.choices[0].message, "reasoning_content", None)
