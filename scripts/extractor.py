@@ -741,7 +741,7 @@ async def main_async():
                 if redis_client:
                     try:
                         cache_key = get_extract_cache_key(src_lang, eff_target, domain, page_text)
-                        await redis_client.set(cache_key, resp_text.encode('utf-8'), ex=2592000)
+                        await redis_client.set(cache_key, resp_text.encode('utf-8'))
                     except Exception as ce:
                         print(f"Redis cache set error: {ce}")
                 return terms

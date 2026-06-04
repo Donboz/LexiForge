@@ -713,7 +713,7 @@ async def main_async():
                         for idx, item in enumerate(batch_items):
                             res = results[idx]
                             cache_key = get_enrich_cache_key_sha256(source_lang, target_lang, item["term"], item.get("definitions", []))
-                            pipe.set(cache_key, orjson.dumps(res), ex=2592000)
+                            pipe.set(cache_key, orjson.dumps(res))
                         await pipe.execute()
                     except Exception as ce:
                         print(f"Redis pipeline write error: {ce}")

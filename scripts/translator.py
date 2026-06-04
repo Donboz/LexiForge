@@ -826,7 +826,7 @@ async def main_async():
                     pass
 
             if is_valid:
-                # Save to Redis with 30-day TTL (2592000 seconds)
+                # Save to Redis permanently
                 if redis_client:
                     try:
                         pipe = redis_client.pipeline(transaction=False)
@@ -837,7 +837,7 @@ async def main_async():
                                 "meaning": (res.get("meaning") or "").strip(),
                                 "example_target": (res.get("example_target") or "").strip()
                             })
-                            pipe.set(cache_key, cache_val, ex=2592000)
+                            pipe.set(cache_key, cache_val)
                         await pipe.execute()
                     except Exception as ce:
                         print(f"Redis pipeline write error: {ce}")
