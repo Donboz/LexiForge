@@ -366,6 +366,10 @@ class FallbackChain:
         """Returns query function according to provider key / Sağlayıcı anahtarına göre sorgu fonksiyonunu döner."""
         fn = PROVIDER_QUERY_FNS.get(provider_key)
         if not fn:
+            # Suffix support (e.g., nvidia_2 or nvidia-alt -> nvidia) / Sonek desteği
+            base_key = provider_key.split('_')[0].split('-')[0]
+            fn = PROVIDER_QUERY_FNS.get(base_key)
+        if not fn:
             raise ValueError(f"Unknown provider / Bilinmeyen sağlayıcı: {provider_key}")
         return fn
 

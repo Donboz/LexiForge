@@ -189,10 +189,12 @@ def main():
         print(f"Fetching models for / Modeller çekiliyor: {provider}...")
         provider_models = []
         try:
-            if provider == "google":
+            # Suffix support (e.g. nvidia_2 -> nvidia) / Sonek desteği
+            provider_base = provider.split('_')[0].split('-')[0]
+            if provider_base == "google":
                 provider_models = fetch_google(api_key)
-            elif provider in openai_compat_configs:
-                base_url = openai_compat_configs[provider]
+            elif provider_base in openai_compat_configs:
+                base_url = openai_compat_configs[provider_base]
                 provider_models = fetch_openai_compat(base_url, api_key)
             else:
                 print(f"Unknown provider type / Bilinmeyen sağlayıcı türü: {provider}")
@@ -212,15 +214,15 @@ def main():
                     
                     # ─── Dynamic Categorization Logic / Dinamik Sınıflandırma Mantığı ───
                     is_free = False
-                    if provider == "google":
+                    if provider_base == "google":
                         # Gemini flash and lite are free, pro is paid
                         is_free = not ("pro" in model_id.lower())
-                    elif provider == "openrouter":
+                    elif provider_base == "openrouter":
                         pricing = m.get("pricing") or {}
                         prompt_price = float(pricing.get("prompt", 0) or 0)
                         completion_price = float(pricing.get("completion", 0) or 0)
                         is_free = (prompt_price == 0.0 and completion_price == 0.0) or model_id.endswith(":free")
-                    elif provider == "huggingface":
+                    elif provider_base == "huggingface":
                         providers_list = m.get("providers") or []
                         is_free = True
                         if providers_list:
@@ -229,13 +231,13 @@ def main():
                             output_price = float(pricing.get("output", 0) or 0)
                             if input_price > 0.0 or output_price > 0.0:
                                  is_free = False
-                    elif provider in ("github", "groq", "cerebras", "sambanova"):
+                    elif provider_base in ("github", "groq", "cerebras", "sambanova"):
                         is_free = True
-                    elif provider == "opencode":
+                    elif provider_base == "opencode":
                         is_free = ("free" in model_id.lower())
-                    elif provider == "mistral":
+                    elif provider_base == "mistral":
                         is_free = not ("large" in model_id.lower() or "medium" in model_id.lower() or "codestral" in model_id.lower())
-                    elif provider == "deepseek" or provider == "nvidia":
+                    elif provider_base == "deepseek" or provider_base == "nvidia":
                         is_free = False
                         
                     # Structure output objects
