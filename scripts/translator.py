@@ -174,6 +174,21 @@ Rules:
 """
 
 
+def get_normalized_gender(item):
+    """Normalizes gender or infers it from article / Cinsiyeti normalize eder veya artikelden çıkarır."""
+    gender = (item.get("gender") or "").strip().upper()
+    if gender in ("NULL", "NONE", "N/A", "UNDEFINED", ""):
+        art = (item.get("article") or item.get("artikel") or "").strip().lower()
+        if art in ("der", "le", "el", "il", "lo"):
+            return "MASCULINE"
+        elif art in ("die", "la"):
+            return "FEMININE"
+        elif art in ("das",):
+            return "NEUTER"
+        return ""
+    return gender
+
+
 def load_existing_output(output_json):
     existing_data = []
     existing_lookup = {}
@@ -193,8 +208,8 @@ def load_existing_output(output_json):
         pos_key = (item.get("partOfSpeech") or "").strip().upper()
         if "artikel" in item:
             item["article"] = item.pop("artikel")
-        art_key = (item.get("article") or "").strip().lower()
-        existing_lookup[(term_key, pos_key, art_key)] = item
+        gender_key = get_normalized_gender(item)
+        existing_lookup[(term_key, pos_key, gender_key)] = item
     return existing_data, existing_lookup
 
 
@@ -302,29 +317,15 @@ def select_targets_interactive(config_languages, src_lang, primary_tgt):
         print("Error: handlers/selector.py not found. Please provide --targets. / Hata: handlers/selector.py bulunamadı. Lütfen --targets argümanını sağlayın.")
         return []
 
-    selected = []
     menu_options = ["ALL"] + options
-    choice = select_item_interactive(menu_options, "Select a target language or ALL (choose DONE after selecting multiple) / Bir hedef dil veya ALL seçin (Birden fazla seçtikten sonra DONE seçin)")
+    choice = select_item_interactive(menu_options, "Select a target language or ALL / Bir hedef dil veya ALL seçin:")
     if not choice:
         return []
     if choice == "ALL":
         return [code.split(" - ")[0].strip().upper() for code in options]
 
-    # Add the first selection
     code = choice.split(" - ")[0].strip().upper()
-    selected.append(code)
-
-    while True:
-        menu = ["DONE"] + [opt for opt in options if opt.split(" - ")[0].strip().upper() not in selected]
-        if len(menu) == 1: # Only DONE left
-            break
-        choice = select_item_interactive(menu, "Select a target language (DONE to finish) / Hedef dil seçin (Bitirmek için DONE seçin)")
-        if not choice or choice == "DONE":
-            break
-        code = choice.split(" - ")[0].strip().upper()
-        if code not in selected:
-            selected.append(code)
-    return selected
+    return [code]
 
 
 # ─── Async Main Loop / Asenkron Ana Döngü ─────────────────────────────────────────
@@ -602,8 +603,9 @@ async def main_async():
             if "artikel" in term_obj:
                 term_obj["article"] = term_obj.pop("artikel")
             art = (term_obj.get("article") or "").strip().lower()
+            gender = get_normalized_gender(term_obj)
 
-            target_term_obj = existing_lookup.get((term.lower(), pos, art))
+            target_term_obj = existing_lookup.get((term.lower(), pos, gender))
             existing_meanings = set()
             if target_term_obj:
                 for definition in target_term_obj.get("definitions", []):
@@ -643,6 +645,7 @@ async def main_async():
                     "term": term,
                     "pos": pos,
                     "art": art,
+                    "gender": gender,
                     "domain": domain,
                     "def_key": def_key,
                     "meaning_hint": meaning_hint,
@@ -678,13 +681,14 @@ async def main_async():
                                     term = occurrence["term"]
                                     pos = occurrence["pos"]
                                     art = occurrence["art"]
+                                    gender = occurrence["gender"]
                                     domain = occurrence["domain"]
                                     def_key = occurrence["def_key"]
                                     term_obj = occurrence["term_obj"]
                                     definition = occurrence["source_def"]
                                     
                                     term_key = term.lower()
-                                    target_term_obj = existing_lookup.get((term_key, pos, art))
+                                    target_term_obj = existing_lookup.get((term_key, pos, gender))
                                     if not target_term_obj:
                                         target_term_obj = {
                                             "term": term,
@@ -692,13 +696,15 @@ async def main_async():
                                         }
                                         if pos:
                                             target_term_obj["partOfSpeech"] = pos
+                                        if gender:
+                                            target_term_obj["gender"] = gender
                                         if art:
                                             target_term_obj["article"] = art
                                         for k, value in term_obj.items():
-                                            if k not in ("definitions", "kaynak_dosya", "artikel", "article", "domain", "partOfSpeech"):
+                                            if k not in ("definitions", "kaynak_dosya", "artikel", "article", "gender", "partOfSpeech"):
                                                 target_term_obj[k] = value
                                         existing_data.append(target_term_obj)
-                                        existing_lookup[(term_key, pos, art)] = target_term_obj
+                                        existing_lookup[(term_key, pos, gender)] = target_term_obj
                                     
                                     existing_meanings = set()
                                     for d in target_term_obj.setdefault("definitions", []):
@@ -876,13 +882,14 @@ async def main_async():
                         term = occurrence["term"]
                         pos = occurrence["pos"]
                         art = occurrence["art"]
+                        gender = occurrence["gender"]
                         domain = occurrence["domain"]
                         def_key = occurrence["def_key"]
                         term_obj = occurrence["term_obj"]
                         definition = occurrence["source_def"]
                         
                         term_key = term.lower()
-                        target_term_obj = existing_lookup.get((term_key, pos, art))
+                        target_term_obj = existing_lookup.get((term_key, pos, gender))
                         
                         if not target_term_obj:
                             target_term_obj = {
@@ -891,13 +898,15 @@ async def main_async():
                             }
                             if pos:
                                 target_term_obj["partOfSpeech"] = pos
+                            if gender:
+                                target_term_obj["gender"] = gender
                             if art:
                                 target_term_obj["article"] = art
                             for k, value in term_obj.items():
-                                if k not in ("definitions", "kaynak_dosya", "artikel", "article", "domain", "partOfSpeech"):
+                                if k not in ("definitions", "kaynak_dosya", "artikel", "article", "gender", "partOfSpeech"):
                                     target_term_obj[k] = value
                             existing_data.append(target_term_obj)
-                            existing_lookup[(term_key, pos, art)] = target_term_obj
+                            existing_lookup[(term_key, pos, gender)] = target_term_obj
                             
                         existing_meanings = set()
                         for d in target_term_obj.get("definitions", []):

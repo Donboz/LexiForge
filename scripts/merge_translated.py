@@ -41,6 +41,21 @@ def extract_pair_from_filename(file_name):
     return None, None
 
 
+def get_normalized_gender(item):
+    """Normalizes gender or infers it from article / Cinsiyeti normalize eder veya artikelden çıkarır."""
+    gender = (item.get("gender") or "").strip().upper()
+    if gender in ("NULL", "NONE", "N/A", "UNDEFINED", ""):
+        art = (item.get("article") or item.get("artikel") or "").strip().lower()
+        if art in ("der", "le", "el", "il", "lo"):
+            return "MASCULINE"
+        elif art in ("die", "la"):
+            return "FEMININE"
+        elif art in ("das",):
+            return "NEUTER"
+        return ""
+    return gender
+
+
 def normalize_meaning(meaning):
     """Standardizes meaning text for deduplication / Eşleşme kontrolü için anlamı normalize eder."""
     if not meaning:
@@ -51,7 +66,7 @@ def normalize_meaning(meaning):
 def merge_fields(target, source):
     """Merges grammatical and metadata fields / Dilbilgisel ve metaveri alanlarını birleştirir."""
     fields_to_merge = [
-        "gender", "plural", "genitive", "comparative", "superlative",
+        "gender", "article", "plural", "genitive", "comparative", "superlative",
         "pastTense", "pastParticiple", "presentParticiple", "auxiliary",
         "conjugation", "isRegular", "isSeparable", "isReflexive", "verbPrefix",
         "pronunciation", "syllables", "level", "etymology", "declension",
@@ -162,15 +177,16 @@ def main():
                     continue
 
                 total_input_records += 1
-                article = (item.get("article") or "").strip().lower()
+                gender = get_normalized_gender(item)
                 pos = (item.get("partOfSpeech") or "").strip().upper()
 
                 # Match key / Eşleşme anahtarı
-                db_key = (term.lower(), article, pos)
+                db_key = (term.lower(), gender, pos)
 
                 if db_key not in merged_db:
                     merged_item = {
                         "term": term,
+                        "gender": item.get("gender") or None,
                         "article": item.get("article") or None,
                         "partOfSpeech": item.get("partOfSpeech") or None,
                         "definitions": []

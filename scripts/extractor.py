@@ -51,6 +51,21 @@ def get_extract_cache_key(src_lang, tgt_lang, domain, page_text):
 
 # ─── Helpers / Yardımcılar ─────────────────────────────────────────────────────
 
+def get_normalized_gender(item):
+    """Normalizes gender or infers it from article / Cinsiyeti normalize eder veya artikelden çıkarır."""
+    gender = (item.get("gender") or "").strip().upper()
+    if gender in ("NULL", "NONE", "N/A", "UNDEFINED", ""):
+        art = (item.get("article") or item.get("artikel") or "").strip().lower()
+        if art in ("der", "le", "el", "il", "lo"):
+            return "MASCULINE"
+        elif art in ("die", "la"):
+            return "FEMININE"
+        elif art in ("das",):
+            return "NEUTER"
+        return ""
+    return gender
+
+
 def save_terms(output_path, new_terms, default_domain="GENERAL"):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     existing_terms = []
@@ -70,14 +85,14 @@ def save_terms(output_path, new_terms, default_domain="GENERAL"):
         pos = (item.get("partOfSpeech") or "").strip().upper()
         if "artikel" in item:
             item["article"] = item.pop("artikel")
-        art = (item.get("article") or "").strip().lower()
+        gender = get_normalized_gender(item)
         
         root_dom = item.pop("domain") if "domain" in item else default_domain
         for d in item.get("definitions", []):
             if isinstance(d, dict) and "domain" not in d:
                 d["domain"] = root_dom or default_domain
 
-        key = (term.lower(), pos, art)
+        key = (term.lower(), pos, gender)
         lookup[key] = item
 
     for item in new_terms:
@@ -88,14 +103,14 @@ def save_terms(output_path, new_terms, default_domain="GENERAL"):
         pos = (item.get("partOfSpeech") or "").strip().upper()
         if "artikel" in item:
             item["article"] = item.pop("artikel")
-        art = (item.get("article") or "").strip().lower()
+        gender = get_normalized_gender(item)
 
         root_dom = item.pop("domain") if "domain" in item else default_domain
         for d in item.get("definitions", []):
             if isinstance(d, dict) and "domain" not in d:
                 d["domain"] = root_dom or default_domain
 
-        key = (term.lower(), pos, art)
+        key = (term.lower(), pos, gender)
         if key in lookup:
             existing_item = lookup[key]
             for field, val in item.items():
