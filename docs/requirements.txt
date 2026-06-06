@@ -1,0 +1,16 @@
+PyPDF2
+orjson
+tqdm
+redis
+websockets
+requests
+aiohttp
+pymupdf
+numpy
+paddlepaddle
+paddleocr
+openai
+cerebras-cloud-sdk
+groq
+google-genai
+json-repair
