@@ -1,22 +1,23 @@
 # Installation Guide / Kurulum Kılavuzu
 
-This document details the environment setup, packages installation, Redis configurations, and API keys management for the Glossa Dictionary Miner.
+This document details the environment setup, packages installation, Redis configurations, and API keys management for LexiForge.
 
-Bu belge, Glossa Dictionary Miner için ortam kurulumunu, paketlerin yüklenmesini, Redis konfigürasyonlarını ve API anahtarlarının yönetimini ayrıntılı olarak açıklamaktadır.
+Bu belge, LexiForge için ortam kurulumunu, paketlerin yüklenmesini, Redis konfigürasyonlarını ve API anahtarlarının yönetimini ayrıntılı olarak açıklamaktadır.
 
 ---
 
-## 📋 Prerequisites / Gereksinimler
+## Prerequisites / Gereksinimler
 
-- **Python 3.10+** (Recommended / Önerilen)
+- **Python 3.11** (Required for PaddleOCR compatibility / PaddleOCR uyumluluğu için gereklidir)
 - **Redis Server** (Optional but highly recommended for caching / Önbellekleme için isteğe bağlı ancak şiddetle önerilir)
 - **API Keys / API Anahtarları** (At least one of the supported providers, e.g. OpenRouter, Groq, Google Gemini, Cerebras, Sambanova, Mistral, GitHub / Desteklenen sağlayıcılardan en az biri)
 
 ---
 
-## 🛠️ Step 1: Environment Setup / Adım 1: Ortam Kurulumu
+## Step 1: Environment Setup / Adım 1: Ortam Kurulumu
 
 ### 1. Clone the repository / Repoyu klonlayın
+
 ```bash
 git clone <repository-url>
 cd scraper
@@ -25,35 +26,41 @@ cd scraper
 ### 2. Create a Virtual Environment / Sanal Ortam Oluşturun
 
 **Windows (CMD/PowerShell):**
+
 ```powershell
 python -m venv venv
 venv\Scripts\activate
 ```
 
 **Linux / macOS:**
+
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 ```
 
 ### 3. Install dependencies / Bağımlılıkları yükleyin
+
 ```bash
 pip install -r requirements.txt
 ```
-*(If `requirements.txt` does not exist, install the core packages manually / Eğer `requirements.txt` mevcut değilse, ana paketleri manuel olarak yükleyin:)*
+
+_(If `requirements.txt` does not exist, install the core packages manually / Eğer `requirements.txt` mevcut değilse, ana paketleri manuel olarak yükleyin:)_
+
 ```bash
-pip install PyPDF2 orjson tqdm redis websockets requests aiohttp
+pip install PyPDF2 orjson tqdm redis websockets requests aiohttp pymupdf paddlepaddle paddleocr
 ```
 
 ---
 
-## 🧠 Step 2: Redis Server Setup / Adım 2: Redis Sunucusu Kurulumu
+## Step 2: Redis Server Setup / Adım 2: Redis Sunucusu Kurulumu
 
 To use the namespaced cache layer, a running Redis instance is required.
 
 Önbellek katmanını kullanabilmek için çalışan bir Redis sunucusu gereklidir.
 
 ### Windows Installation / Windows Kurulumu
+
 1. Download **Redis-x64** from GitHub releases (e.g., [tporadowski/redis](https://github.com/tporadowski/redis/releases)) or use **WSL** (Windows Subsystem for Linux).
    GitHub releases üzerinden Windows için Redis indirin veya WSL kullanın.
 2. Run the installer or extract and start:
@@ -63,8 +70,10 @@ To use the namespaced cache layer, a running Redis instance is required.
    ```
 
 ### Linux Installation / Linux Kurulumu
+
 Install via your system's package manager:
 Sistem paket yöneticiniz ile kurulum yapın:
+
 ```bash
 sudo apt update
 sudo apt install redis-server
@@ -74,7 +83,7 @@ sudo systemctl start redis-server
 
 ---
 
-## 🔑 Step 3: API Keys & Configuration / Adım 3: API Anahtarları ve Yapılandırma
+## Step 3: API Keys & Configuration / Adım 3: API Anahtarları ve Yapılandırma
 
 The application configuration is managed under `config/config.json` and `config/models.json`.
 
@@ -101,14 +110,14 @@ Uygulama yapılandırması `config/config.json` ve `config/models.json` dosyalar
 
 ---
 
-## 🏃 Step 4: Running the Orchestrator / Adım 4: Orkestratörü Çalıştırma
+## Step 4: Running the Orchestrator / Adım 4: Orkestratörü Çalıştırma
 
 Start the interactive CLI menu:
 
 İnteraktif CLI menüsünü başlatın:
 
 ```bash
-python run.py
+py -3.11 run.py
 ```
 
 Choose Option `9` first to verify that your Redis connection is active and working. Then, proceed with data extraction, translation, or enrichment!

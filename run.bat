@@ -1,3 +1,3 @@
 @echo off
-title SCRAPER
-py run.py
+title LexiForge
+py -3.11 run.py

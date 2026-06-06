@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Glossa Orchestrator / Glossa Orkestratör
-=======================================
+LexiForge Orchestrator / LexiForge Orkestratör
+==============================================
 Main entry point to run various extraction, enrichment, translation, and clean up scripts.
 
 Çeşitli çıkarma, zenginleştirme, çeviri ve temizleme scriptlerini çalıştırmak için ana giriş noktası.

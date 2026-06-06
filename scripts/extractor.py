@@ -353,10 +353,41 @@ SADECE JSON ARRAY VER:
 """
 
 
+def check_pdf_status(pdf_path, config):
+    pdf_name = os.path.basename(pdf_path)
+    pdf_map = config.get("pdf_lang_map", {})
+    mapping = pdf_map.get(pdf_name)
+    if not mapping:
+        for k, v in pdf_map.items():
+            if os.path.basename(k) == pdf_name:
+                mapping = v
+                break
+    if not mapping:
+        mapping = {"source": "DE", "target": "TR"}
+    src_lang = mapping.get("source", "DE")
+    tgt_lang = mapping.get("target", "TR")
+    eff_target = "TR" if src_lang == tgt_lang else tgt_lang
+    pdf_base = os.path.splitext(pdf_name)[0]
+    progress_path = os.path.join("data", "progress", "extractor", f"{pdf_base}_sozluk_{src_lang}_{eff_target}_progress.json")
+    
+    if not os.path.exists(progress_path):
+        return None
+    try:
+        with open(progress_path, "rb") as f:
+            import orjson
+            pdata = orjson.loads(f.read())
+        status = pdata.get("status", {})
+        if status.get("pdf_done") is True or status.get("state") == "DONE":
+            return "COMPLETE"
+    except Exception:
+        pass
+    return None
+
+
 # ─── Async Main Loop / Asenkron Ana Döngü ──────────────────────────────────────
 
 async def main_async():
-    parser = argparse.ArgumentParser(description="Glossa Master Extractor — Fallback Chain")
+    parser = argparse.ArgumentParser(description="LexiForge Master Extractor — Fallback Chain")
     group = parser.add_mutually_exclusive_group(required=False)
     group.add_argument("--file", help="PDF file name or path")
     group.add_argument("--all", action="store_true", help="Process all PDFs")
@@ -366,11 +397,18 @@ async def main_async():
     parser.add_argument("--provider", help="Filter by a specific provider (openrouter, cerebras, groq, google, github, sambanova, mistral)")
     parser.add_argument("--model", help="Filter by a specific model")
     parser.add_argument("--semaphore", type=int, default=8, help="Max concurrent requests (Semaphore)")
+    parser.add_argument("--ocr", action="store_true", default=None, help="Force OCR extraction / OCR ile çıkarmayı zorla")
+    parser.add_argument("--no-ocr", action="store_true", help="Disable OCR and use standard PDF text extraction / OCR'ı devre dışı bırak ve standart PDF metnini kullan")
     args = parser.parse_args()
 
     from handlers.selector import select_item_interactive, select_boolean_interactive, select_file_interactive
 
     config = load_config()
+    ocr_cfg = config.setdefault("ocr", {})
+    if args.ocr is True:
+        ocr_cfg["enabled"] = True
+    elif args.no_ocr:
+        ocr_cfg["enabled"] = False
     base_dir = config.get("base_dir", "")
     if not base_dir or not os.path.exists(base_dir):
         print(f"Error: Base directory '{base_dir}' does not exist. / Hata: '{base_dir}' ana dizini bulunamadı.")
@@ -419,7 +457,8 @@ async def main_async():
                 print("No PDF files found to process. / İşlenecek PDF dosyası bulunamadı.")
                 sys.exit(1)
 
-            selected = select_file_interactive(all_pdfs, "Select the PDF file to extract terms from / Terim çıkarılacak PDF dosyasını seçin")
+            status_dict = { pdf: check_pdf_status(pdf, config) for pdf in all_pdfs }
+            selected = select_file_interactive(all_pdfs, "Select the PDF file to extract terms from / Terim çıkarılacak PDF dosyasını seçin", status_dict=status_dict)
             if not selected:
                 print("Selection cancelled. / İptal edildi.")
                 sys.exit(0)
@@ -648,20 +687,28 @@ async def main_async():
         page_by_key = {}
         
         try:
+            ocr_enabled = config.get("ocr", {}).get("enabled", True)
+            if ocr_enabled:
+                print(f"  [OCR] PaddleOCR engine is active for text extraction / [OCR] Metin okuma için PaddleOCR aktif.")
             with open(pdf_path, "rb") as f:
                 reader = PyPDF2.PdfReader(f)
                 for page_num in range(start_page, end_page + 1):
                     if page_num in processed_pages:
                         continue
                     try:
-                        page_text = reader.pages[page_num - 1].extract_text() or ""
+                        if ocr_enabled:
+                            from handlers.ocr_handler import extract_text_from_pdf_page
+                            page_text = extract_text_from_pdf_page(pdf_path, page_num, config, src_lang=src_lang)
+                        else:
+                            page_text = reader.pages[page_num - 1].extract_text() or ""
+                            
                         if page_text.strip():
                             page_texts[page_num] = page_text
                             key = get_extract_cache_key(src_lang, eff_target, domain, page_text)
                             cache_keys.append(key)
                             page_by_key[key] = (page_num, page_text)
-                    except Exception:
-                        pass
+                    except Exception as pe:
+                        print(f"  Page / Sayfa {page_num} read error / okuma hatası: {pe}")
         except Exception as e:
             print(f"Error reading PDF / PDF okuma hatası {pdf_name}: {e}")
             active_logger.error("pdf_read_error", error=str(e))

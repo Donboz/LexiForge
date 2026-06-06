@@ -400,10 +400,31 @@ def apply_enrichment_result(orig_item, response_item, NEW_FIELDS):
     return updated_items
 
 
+def check_enrich_file_status(file_path):
+    try:
+        with open(file_path, "rb") as f:
+            terms = orjson.loads(f.read())
+        if not isinstance(terms, list):
+            return None
+        
+        needs_processing = False
+        for term_obj in terms:
+            term = (term_obj.get("term") or "").strip()
+            if term and not term_obj.get("partOfSpeech"):
+                needs_processing = True
+                break
+        
+        if not needs_processing:
+            return "COMPLETE"
+    except Exception:
+        pass
+    return None
+
+
 # ─── Async Main Loop / Asenkron Ana Döngü ──────────────────────────────────────
 
 async def main_async():
-    parser = argparse.ArgumentParser(description="Glossa Master Enricher — Fallback Chain")
+    parser = argparse.ArgumentParser(description="LexiForge Master Enricher — Fallback Chain")
     group = parser.add_mutually_exclusive_group(required=False)
     group.add_argument("--file", help="JSON dictionary file name or path")
     group.add_argument("--all", action="store_true", help="Process all JSON files")
@@ -463,7 +484,8 @@ async def main_async():
                 print("No JSON files to enrich found. / Zenginleştirilecek JSON dosyası bulunamadı.")
                 sys.exit(1)
 
-            selected = select_file_interactive(all_jsons, "Select the JSON dictionary file to enrich / Zenginleştirilecek JSON sözlük dosyasını seçin")
+            status_dict = { f: check_enrich_file_status(f) for f in all_jsons }
+            selected = select_file_interactive(all_jsons, "Select the JSON dictionary file to enrich / Zenginleştirilecek JSON sözlük dosyasını seçin", status_dict=status_dict)
             if not selected:
                 print("Selection cancelled. / Seçim iptal edildi.")
                 sys.exit(0)

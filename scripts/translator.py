@@ -301,12 +301,36 @@ def append_unique_record(items, key, reason, detail=""):
     items.append({"key": key, "reason": reason, "detail": detail, "timestamp": now_iso()})
 
 
-def select_targets_interactive(config_languages, src_lang, primary_tgt):
+def check_source_json_status(source_path, config):
+    src_lang, primary_tgt = extract_pair_from_filename(source_path)
+    config_languages = config.get("languages", {})
+    available_targets = [lang_code for lang_code in config_languages.keys() if lang_code not in (src_lang, primary_tgt)]
+    
+    if not available_targets:
+        return "COMPLETE"
+        
+    all_done = True
+    for tgt in available_targets:
+        if not is_translation_done_for_pair(source_path, src_lang, tgt):
+            all_done = False
+            break
+            
+    if all_done:
+        return "COMPLETE"
+    return None
+
+
+def select_targets_interactive(config_languages, src_lang, primary_tgt, source_path):
     options = []
+    status_dict = {}
     for lang_code in sorted(config_languages.keys()):
         if lang_code in (src_lang, primary_tgt):
             continue
-        options.append(f"{lang_code} - {config_languages.get(lang_code, lang_code)}")
+        option_str = f"{lang_code} - {config_languages.get(lang_code, lang_code)}"
+        options.append(option_str)
+        if is_translation_done_for_pair(source_path, src_lang, lang_code):
+            status_dict[lang_code] = "COMPLETE"
+            status_dict[option_str] = "COMPLETE"
 
     if not options:
         return []
@@ -318,11 +342,15 @@ def select_targets_interactive(config_languages, src_lang, primary_tgt):
         return []
 
     menu_options = ["ALL"] + options
-    choice = select_item_interactive(menu_options, "Select a target language or ALL / Bir hedef dil veya ALL seçin:")
+    all_targets_done = all(status_dict.get(l) == "COMPLETE" for l in sorted(config_languages.keys()) if l not in (src_lang, primary_tgt))
+    if all_targets_done:
+        status_dict["ALL"] = "COMPLETE"
+
+    choice = select_item_interactive(menu_options, "Select a target language or ALL / Bir hedef dil veya ALL seçin:", status_dict=status_dict)
     if not choice:
         return []
     if choice == "ALL":
-        return [code.split(" - ")[0].strip().upper() for code in options]
+        return [code for code in sorted(config_languages.keys()) if code not in (src_lang, primary_tgt) and not is_translation_done_for_pair(source_path, src_lang, code)]
 
     code = choice.split(" - ")[0].strip().upper()
     return [code]
@@ -331,7 +359,7 @@ def select_targets_interactive(config_languages, src_lang, primary_tgt):
 # ─── Async Main Loop / Asenkron Ana Döngü ─────────────────────────────────────────
 
 async def main_async():
-    parser = argparse.ArgumentParser(description="Glossa Master Translator — Fallback Chain")
+    parser = argparse.ArgumentParser(description="LexiForge Master Translator — Fallback Chain")
     parser.add_argument("--source", help="Source JSON dictionary file path or name")
     parser.add_argument("--targets", help="Target language codes (comma separated, e.g. EN,FR)")
     parser.add_argument("--limit", type=int, default=0, help="Max definitions to translate")
@@ -362,7 +390,8 @@ async def main_async():
             print("ERROR: Source JSON file to translate not found / HATA: Çevrilecek kaynak JSON dosyası bulunamadı.")
             sys.exit(1)
 
-        source_path = select_file_interactive(all_jsons, "Select the source JSON dictionary file to translate / Çevrilecek kaynak JSON sözlük dosyasını seçin")
+        status_dict = { f: check_source_json_status(f, config) for f in all_jsons }
+        source_path = select_file_interactive(all_jsons, "Select the source JSON dictionary file to translate / Çevrilecek kaynak JSON sözlük dosyasını seçin", status_dict=status_dict)
         if not source_path:
             print("Selection cancelled / Seçim iptal edildi.")
             sys.exit(0)
@@ -388,7 +417,7 @@ async def main_async():
     targets_str = args.targets
     if not targets_str:
         src_lang, primary_tgt = extract_pair_from_filename(source_path)
-        target_langs = select_targets_interactive(config.get("languages", {}), src_lang, primary_tgt)
+        target_langs = select_targets_interactive(config.get("languages", {}), src_lang, primary_tgt, source_path)
         if not target_langs:
             print("Selection cancelled or no target selected / Seçim iptal edildi ya da hedef seçilmedi.")
             sys.exit(0)

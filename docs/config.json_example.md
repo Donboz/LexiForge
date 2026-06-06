@@ -1,12 +1,12 @@
 # Configuration Template / Yapılandırma Şablonu (`config.json`)
 
-This document provides a template and explanation for the `config/config.json` configuration file used by the Glossa Dictionary Miner. 
+This document provides a template and explanation for the `config/config.json` configuration file used by LexiForge.
 
-Bu belge, Glossa Dictionary Miner tarafından kullanılan `config/config.json` yapılandırma dosyası için bir şablon ve açıklama sunar.
+Bu belge, LexiForge tarafından kullanılan `config/config.json` yapılandırma dosyası için bir şablon ve açıklama sunar.
 
 ---
 
-## 📄 Example Configuration Template / Örnek Yapılandırma Şablonu
+## Example Configuration Template / Örnek Yapılandırma Şablonu
 
 Create a file named `config.json` inside the `config/` directory with the following structure:
 `config/` dizini içerisinde aşağıdaki yapıya sahip `config.json` adında bir dosya oluşturun:
@@ -20,15 +20,16 @@ Create a file named `config.json` inside the `config/` directory with the follow
     "db": 0,
     "password": null
   },
+  "ocr": {
+    "enabled": true,
+    "use_gpu": false,
+    "column_detection": true
+  },
   "api_providers": {
     "google": {
       "enabled": true,
       "api_key": "YOUR_GEMINI_API_KEY",
-      "models": [
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-2.0-flash"
-      ],
+      "models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
       "rate_limit_rpm": 15,
       "max_concurrent": 2,
       "_comment": "Google Gemini API via google-genai SDK."
@@ -36,20 +37,14 @@ Create a file named `config.json` inside the `config/` directory with the follow
     "github": {
       "enabled": false,
       "api_key": "YOUR_GITHUB_TOKEN",
-      "models": [
-        "Meta-Llama-3.1-405B-Instruct", 
-        "Meta-Llama-3.1-8B-Instruct"
-      ],
+      "models": ["Meta-Llama-3.1-405B-Instruct", "Meta-Llama-3.1-8B-Instruct"],
       "rate_limit_rpm": 15,
       "max_concurrent": 2
     },
     "deepseek": {
       "enabled": true,
       "api_key": "YOUR_DEEPSEEK_API_KEY",
-      "models": [
-        "deepseek-v4-flash",
-        "deepseek-v4-pro"
-      ],
+      "models": ["deepseek-v4-flash", "deepseek-v4-pro"],
       "rate_limit_rpm": 60,
       "max_concurrent": 4,
       "_comment": "DeepSeek official API."
@@ -79,38 +74,28 @@ Create a file named `config.json` inside the `config/` directory with the follow
     "cerebras": {
       "enabled": false,
       "api_key": "YOUR_CEREBRAS_API_KEY",
-      "models": [
-        "llama3.1-8b"
-      ],
+      "models": ["llama3.1-8b"],
       "rate_limit_rpm": 30,
       "max_concurrent": 3
     },
     "groq": {
       "enabled": true,
       "api_key": "YOUR_GROQ_API_KEY",
-      "models": [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant"
-      ],
+      "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
       "rate_limit_rpm": 30,
       "max_concurrent": 2
     },
     "sambanova": {
       "enabled": false,
       "api_key": "YOUR_SAMBANOVA_API_KEY",
-      "models": [
-        "Meta-Llama-3.3-70B-Instruct"
-      ],
+      "models": ["Meta-Llama-3.3-70B-Instruct"],
       "rate_limit_rpm": 30,
       "max_concurrent": 2
     },
     "mistral": {
       "enabled": false,
       "api_key": "YOUR_MISTRAL_API_KEY",
-      "models": [
-        "codestral-latest",
-        "open-mistral-nemo"
-      ],
+      "models": ["codestral-latest", "open-mistral-nemo"],
       "rate_limit_rpm": 30,
       "max_concurrent": 2
     }
@@ -161,43 +146,54 @@ Create a file named `config.json` inside the `config/` directory with the follow
 
 ---
 
-## 🔍 Section Explanations / Alan Açıklamaları
+## Section Explanations / Alan Açıklamaları
 
 ### 1. `base_dir`
-* **EN**: Absolute path to the folder containing your source dictionary files (e.g. PDFs). Use double backslashes (`\\`) on Windows.
-* **TR**: Kaynak sözlük dosyalarınızın (örn. PDF'ler) bulunduğu klasörün mutlak yolu. Windows'ta çift eğik çizgi (`\\`) kullanın.
+
+- **EN**: Absolute path to the folder containing your source dictionary files (e.g. PDFs). Use double backslashes (`\\`) on Windows.
+- **TR**: Kaynak sözlük dosyalarınızın (örn. PDF'ler) bulunduğu klasörün mutlak yolu. Windows'ta çift eğik çizgi (`\\`) kullanın.
 
 ### 2. `redis`
-* **EN**: Redis connection details. If Redis is not used, this section will be ignored, and file-based execution is run.
-* **TR**: Redis bağlantı detayları. Redis kullanılmadığında bu alan yoksayılır ve dosya tabanlı çalışma yürütülür.
 
-### 3. `api_providers`
-* **EN**: List of API endpoints, keys, models list, concurrency, and rate-limits. Set `"enabled": true` to include a provider in the active fallback chain.
-  * **DeepSeek**: Connects to `https://api.deepseek.com` endpoint using OpenAI-compatible queries.
-  * **Hugging Face**: Connects to the Hugging Face Router API at `https://router.huggingface.co/v1` without downloading any model weights locally.
-* **TR**: API adresleri, anahtarlar, modeller listesi, eşzamanlılık ve istek sınırları listesi. Bir sağlayıcıyı aktif fallback zincirine dahil etmek için `"enabled": true` yapın.
-  * **DeepSeek**: OpenAI uyumlu sorgular kullanarak `https://api.deepseek.com` adresine bağlanır.
-  * **Hugging Face**: Yerel diskinize herhangi bir model indirmeden doğrudan `https://router.huggingface.co/v1` adresindeki Hugging Face Router API'ye bağlanır.
+- **EN**: Redis connection details. If Redis is not used, this section will be ignored, and file-based execution is run.
+- **TR**: Redis bağlantı detayları. Redis kullanılmadığında bu alan yoksayılır ve dosya tabanlı çalışma yürütülür.
 
-### 4. `languages`
-* **EN**: Key-value pairs mapping language codes (e.g. `"DE"`) to their full names (e.g. `"Almanca"`).
-* **TR**: Dil kodlarını (örn. `"DE"`) tam adlarıyla (örn. `"Almanca"`) eşleştiren anahtar-değer çiftleri.
+### 3. `ocr`
 
-### 5. `fallback`
-* **EN**: Controls the behavior of the API failover architecture.
+- **EN**: OCR settings for extracting text from scanned/image PDFs using PaddleOCR and PyMuPDF. Set `enabled` to `true` to use OCR by default. `column_detection` enables layout-aware vertical column ordering.
+- **TR**: PaddleOCR ve PyMuPDF kullanarak taranmış/görsel PDF'lerden metin çıkarmak için OCR ayarları. Varsayılan olarak OCR kullanmak için `enabled` değerini `true` yapın. `column_detection` seçeneği dikey sütun sıralamasını aktif hale getirir.
+
+### 4. `api_providers`
+
+- **EN**: List of API endpoints, keys, models list, concurrency, and rate-limits. Set `"enabled": true` to include a provider in the active fallback chain.
+  - **DeepSeek**: Connects to `https://api.deepseek.com` endpoint using OpenAI-compatible queries.
+  - **Hugging Face**: Connects to the Hugging Face Router API at `https://router.huggingface.co/v1` without downloading any model weights locally.
+- **TR**: API adresleri, anahtarlar, modeller listesi, eşzamanlılık ve istek sınırları listesi. Bir sağlayıcıyı aktif fallback zincirine dahil etmek için `"enabled": true` yapın.
+  - **DeepSeek**: OpenAI uyumlu sorgular kullanarak `https://api.deepseek.com` adresine bağlanır.
+  - **Hugging Face**: Yerel diskinize herhangi bir model indirmeden doğrudan `https://router.huggingface.co/v1` adresindeki Hugging Face Router API'ye bağlanır.
+
+### 5. `languages`
+
+- **EN**: Key-value pairs mapping language codes (e.g. `"DE"`) to their full names (e.g. `"Almanca"`).
+- **TR**: Dil kodlarını (örn. `"DE"`) tam adlarıyla (örn. `"Almanca"`) eşleştiren anahtar-değer çiftleri.
+
+### 6. `fallback`
+
+- **EN**: Controls the behavior of the API failover architecture.
   - `provider_order`: The priority sequence when attempting model requests.
   - `retry_delay_sec`: Time to wait before retrying a failed query.
-* **TR**: API yedekleme mimarisinin davranışını kontrol eder.
+- **TR**: API yedekleme mimarisinin davranışını kontrol eder.
   - `provider_order`: Model istekleri denenirken izlenecek öncelik sırası.
   - `retry_delay_sec`: Başarısız bir sorguyu yeniden denemeden önce beklenecek süre.
 
-### 6. `pdf_lang_map`
-* **EN**: Maps dictionary filenames to their respective configurations:
+### 7. `pdf_lang_map`
+
+- **EN**: Maps dictionary filenames to their respective configurations:
   - `source`: Source language code.
   - `target`: Target language code.
   - `domain`: Subject domain (`GENERAL`, `LEGAL`, `MEDICAL`, `IDIOM`, `TECHNICAL`, etc.).
   - `provider` / `model` (Optional): Forces a specific LLM instead of using the fallback chain.
-* **TR**: Sözlük dosya isimlerini kendi yapılandırmalarıyla eşleştirir:
+- **TR**: Sözlük dosya isimlerini kendi yapılandırmalarıyla eşleştirir:
   - `source`: Kaynak dil kodu.
   - `target`: Hedef dil kodu.
   - `domain`: Konu alanı (`GENERAL`, `LEGAL`, `MEDICAL`, `IDIOM`, `TECHNICAL` vb.).
