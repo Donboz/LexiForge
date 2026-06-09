@@ -345,6 +345,10 @@ def extract_pair_from_filename(file_path):
     matches = re.findall(r'sozluk_([a-zA-Z]{2,})_([a-zA-Z]{2,})', file_path)
     if matches:
         return matches[-1][0].upper(), matches[-1][1].upper()
+    base_name = os.path.basename(file_path)
+    matches_final = re.findall(r'([a-zA-Z]{2,})_([a-zA-Z]{2,})\.json$', base_name)
+    if matches_final:
+        return matches_final[-1][0].upper(), matches_final[-1][1].upper()
     return "DE", "TR"
 
 
@@ -453,8 +457,9 @@ async def main_async():
     elif args.all:
         if os.path.exists(json_dir):
             for f in os.listdir(json_dir):
-                if f.endswith(".json") and not f.endswith(".tmp") and "sozluk_" in f and "_progress" not in f:
-                    json_files.append(os.path.join(json_dir, f))
+                if f.endswith(".json") and not f.endswith(".tmp") and "_progress" not in f:
+                    if "sozluk_" in f or re.match(r'^[a-zA-Z]{2,}_[a-zA-Z]{2,}\.json$', f):
+                        json_files.append(os.path.join(json_dir, f))
     else:
         action_options = [
             "Enrich a single JSON file / Tek bir JSON dosyasını zenginleştir", 
@@ -469,14 +474,16 @@ async def main_async():
             args.all = True
             if os.path.exists(json_dir):
                 for f in os.listdir(json_dir):
-                    if f.endswith(".json") and not f.endswith(".tmp") and "sozluk_" in f and "_progress" not in f:
-                        json_files.append(os.path.join(json_dir, f))
+                    if f.endswith(".json") and not f.endswith(".tmp") and "_progress" not in f:
+                        if "sozluk_" in f or re.match(r'^[a-zA-Z]{2,}_[a-zA-Z]{2,}\.json$', f):
+                            json_files.append(os.path.join(json_dir, f))
         else:
             all_jsons = []
             if os.path.exists(json_dir):
                 for f in os.listdir(json_dir):
-                    if f.endswith(".json") and not f.endswith(".tmp") and "sozluk_" in f and "_progress" not in f:
-                        all_jsons.append(os.path.join(json_dir, f))
+                    if f.endswith(".json") and not f.endswith(".tmp") and "_progress" not in f:
+                        if "sozluk_" in f or re.match(r'^[a-zA-Z]{2,}_[a-zA-Z]{2,}\.json$', f):
+                            all_jsons.append(os.path.join(json_dir, f))
             if not all_jsons:
                 print("No JSON files to enrich found. / Zenginleştirilecek JSON dosyası bulunamadı.")
                 sys.exit(1)
