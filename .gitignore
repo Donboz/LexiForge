@@ -22,6 +22,9 @@ data/merged/
 data/translated/
 data/progress/
 data/logs/
+data/final/
+data/exports/
+data/
 
 # Configuration secrets and fetched models
 config/config.json

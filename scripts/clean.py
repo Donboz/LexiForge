@@ -51,11 +51,9 @@ def is_consolidated_filename(filename):
 
 
 def extract_pair_from_filename(filename):
-    base_name = os.path.splitext(os.path.basename(filename))[0]
-    parts = base_name.split("_")
-    for index, part in enumerate(parts):
-        if part.lower() == "sozluk" and index + 2 < len(parts):
-            return parts[index + 1].upper(), parts[index + 2].upper()
+    matches = re.findall(r'sozluk_([a-zA-Z]{2,})_([a-zA-Z]{2,})', filename)
+    if matches:
+        return matches[-1][0].upper(), matches[-1][1].upper()
     return "DE", "TR"
 
 

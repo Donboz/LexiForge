@@ -31,13 +31,9 @@ FINAL_DIR = os.path.join("data", "final")
 
 def extract_pair_from_filename(file_name):
     """Extracts source and target language codes from file name / Dosya adından dil çiftini çıkarır."""
-    base_name = file_name.replace(".json", "")
-    parts = base_name.split("_")
-    for index, part in enumerate(parts):
-        if part.lower() == "sozluk" and index + 2 < len(parts):
-            src = parts[index + 1].upper()
-            tgt = parts[index + 2].upper()
-            return src, tgt
+    matches = re.findall(r'sozluk_([a-zA-Z]{2,})_([a-zA-Z]{2,})', file_name)
+    if matches:
+        return matches[-1][0].upper(), matches[-1][1].upper()
     return None, None
 
 

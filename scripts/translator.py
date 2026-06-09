@@ -69,12 +69,10 @@ def get_translate_cache_key(src_lang, tgt_lang, term, domain, meaning_hint, exam
 # ─── Helpers / Yardımcılar ─────────────────────────────────────────────────────────
 
 def extract_pair_from_filename(file_path):
-    base_name = os.path.basename(file_path).replace(".json", "")
-    parts = base_name.split("_")
-    for index, part in enumerate(parts):
-        if part.lower() == "sozluk" and index + 2 < len(parts):
-            src = parts[index + 1].upper()
-            return src, parts[index + 2].upper()
+    import re
+    matches = re.findall(r'sozluk_([a-zA-Z]{2,})_([a-zA-Z]{2,})', file_path)
+    if matches:
+        return matches[-1][0].upper(), matches[-1][1].upper()
     return "DE", "TR"
 
 
