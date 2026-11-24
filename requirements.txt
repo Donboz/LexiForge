@@ -1,4 +1,5 @@
 PyPDF2
+pypdf
 orjson
 tqdm
 redis

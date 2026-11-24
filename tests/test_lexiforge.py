@@ -17,12 +17,15 @@ from handlers.lexical_filter import (  # noqa: E402
     SUPPORTED_LANGS,
     classify_headword,
     clean_definitions,
+    detect_language_anomaly,
     is_junk_meaning,
     is_protected_headword,
     normalize_domain,
     sanitize_article_and_gender,
+    sanitize_grammar_fields,
 )
 from handlers.fallback_chain import parse_json_response  # noqa: E402
+from scripts.nim_sql_sync import NimPool, parse_glossa_pdf_text  # noqa: E402
 
 
 class TestLexicalFilter(unittest.TestCase):
@@ -167,6 +170,147 @@ class TestLexicalFilter(unittest.TestCase):
         )
         self.assertEqual(ro_noun["article"], "un")
         self.assertEqual(ro_noun["gender"], "AMBIGENERIC")
+
+    def test_detect_language_anomaly_all_rules(self):
+        self.assertIn("cyrillic_in_non_slavic", detect_language_anomaly("дом", "DE"))
+        self.assertIn("missing_cyrillic_script", detect_language_anomaly("dom", "RU"))
+        self.assertIn("turkish_chars_in_foreign_term", detect_language_anomaly("yağmur", "DE"))
+        self.assertIn("german_eszett_in_non_de", detect_language_anomaly("Straße", "TR"))
+        self.assertIn("article_on_genderless_lang", detect_language_anomaly("ev", "TR", article="der"))
+        self.assertIn("pos_garbage_in_article", detect_language_anomaly("Haus", "DE", article="f"))
+        self.assertIn(
+            "same_src_tgt_lang",
+            detect_language_anomaly("masa", "TR", definitions=[{"meaning": "table", "language": "TR"}]),
+        )
+        self.assertEqual(
+            detect_language_anomaly("Haus", "DE", article="das", definitions=[{"meaning": "ev", "language": "TR"}]),
+            [],
+        )
+
+    def test_sanitize_grammar_fields_12_languages(self):
+        ru_verb = sanitize_grammar_fields({
+            "text": "читать",
+            "lang": "RU",
+            "partOfSpeech": "VERB",
+            "transliteration": "chitat",
+            "aspect": "IMPERFECTIVE",
+            "aspectPair": "прочитать",
+            "conjugationClass": "I",
+            "article": "der",
+        })
+        self.assertEqual(ru_verb["script"], "CYRILLIC")
+        self.assertEqual(ru_verb["transliteration"], "chitat")
+        self.assertEqual(ru_verb["aspect"], "IMPERFECTIVE")
+        self.assertIsNone(ru_verb["article"])
+
+        ro_noun = sanitize_grammar_fields({
+            "text": "caiet",
+            "lang": "RO",
+            "partOfSpeech": "NOUN",
+            "article": "un",
+            "gender": "AMBIGENERIC",
+            "definiteForm": "caietul",
+        })
+        self.assertEqual(ro_noun["definiteForm"], "caietul")
+        self.assertEqual(ro_noun["gender"], "AMBIGENERIC")
+
+        tr_noun = sanitize_grammar_fields({
+            "text": "kitap",
+            "lang": "TR",
+            "partOfSpeech": "NOUN",
+            "article": "das",
+            "vowelHarmony": "back/unrounded; p->b",
+        })
+        self.assertIsNone(tr_noun["article"])
+        self.assertEqual(tr_noun["vowelHarmony"], "back/unrounded; p->b")
+
+        de_verb = sanitize_grammar_fields({
+            "text": "gehen",
+            "lang": "DE",
+            "partOfSpeech": "VERB",
+            "auxiliary": "SEIN",
+            "level": "A1",
+            "secondaryDomains": ["Transport", "transport", "GENERAL"],
+            "primaryDomain": "GENERAL",
+        })
+        self.assertEqual(de_verb["auxiliary"], "sein")
+        self.assertEqual(de_verb["secondaryDomains"], ["TRANSPORT"])
+
+
+class TestNimPoolAndPdfParser(unittest.TestCase):
+    def test_nim_pool_builds_and_rotates_10_unique_channels(self):
+        pool = NimPool(api_keys=["k1", "k2"])
+        pool.models = [
+            {"model": f"m{i}", "ok": True, "latency_ms": 100.0 + i, "thinking_kw": False}
+            for i in range(5)
+        ]
+        pool._build_channels()
+        self.assertEqual(len(pool.channels), 10)
+        first_picks = [pool.pick_channel_order()[0]["id"] for _ in range(10)]
+        self.assertEqual(len(set(first_picks)), 10)
+
+    def test_parse_glossa_pdf_text_multi_chapter(self):
+        sample_pdf = """
+BÖLÜM
+
+Almanca → İngilizce
+Bu bölüm kayıtlı ve onaylı 2 adet terim içerir.
+
+Glossa Büyük Sözlük 4
+
+#
+11th
+[Genel]
+
+1. 11th
+
+das Haus
+(n.) [Mimarlık]
+
+1. house
+Örn: Das Haus ist groß. (The house is big.)
+
+BÖLÜM
+
+İngilizce → İspanyolca
+Bu bölüm kayıtlı ve onaylı 1 adet terim içerir.
+
+Glossa Büyük Sözlük 2413
+
+E
+book
+(n.) [Eğitim]
+
+1. libro
+
+BÖLÜM
+
+Türkçe → Rusça
+Bu bölüm kayıtlı ve onaylı 1 adet terim içerir.
+
+Glossa Büyük Sözlük 9
+
+E
+elma
+(n.) [Gastronomi]
+
+1. яблоко
+"""
+        parsed = parse_glossa_pdf_text(sample_pdf)
+        self.assertEqual(len(parsed), 4)
+        self.assertEqual(parsed[0]["pair"], "DE->EN")
+        self.assertEqual(parsed[0]["text"], "11th")
+        self.assertEqual(parsed[1]["text"], "Haus")
+        self.assertEqual(parsed[1]["article"], "das")
+        self.assertEqual(parsed[1]["partOfSpeech"], "NOUN")
+        self.assertEqual(parsed[1]["primaryDomain"], "ARCHITECTURE")
+        self.assertEqual(parsed[1]["examples"][0]["translation"], "The house is big.")
+        self.assertEqual(parsed[2]["pair"], "EN->ES")
+        self.assertEqual(parsed[2]["text"], "book")
+        self.assertEqual(parsed[2]["primaryDomain"], "EDUCATION")
+        self.assertEqual(parsed[3]["pair"], "TR->RU")
+        self.assertEqual(parsed[3]["text"], "elma")
+        self.assertEqual(parsed[3]["definitions"][0]["meaning"], "яблоко")
 
 
 class TestResponseParserAndCLI(unittest.TestCase):
