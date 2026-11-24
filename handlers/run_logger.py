@@ -6,7 +6,22 @@ Run Logger Module / Çalıştırma Loglama Modülü
 Provides structured file logging and atomic JSON saving for workflow scripts.
 İş akışı betikleri için yapılandırılmış dosya loglaması ve atomik JSON kaydetme sağlar.
 """
-import orjson
+try:
+    import orjson
+    def _dumps_pretty(payload) -> bytes:
+        return orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_NON_STR_KEYS)
+    def _dumps_line(payload) -> bytes:
+        return orjson.dumps(payload)
+    def _loads_bytes(raw: bytes):
+        return orjson.loads(raw)
+except ImportError:
+    import json
+    def _dumps_pretty(payload) -> bytes:
+        return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    def _dumps_line(payload) -> bytes:
+        return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    def _loads_bytes(raw: bytes):
+        return json.loads(raw.decode("utf-8"))
 import os
 import threading
 import time
@@ -49,7 +64,7 @@ def save_json_atomic(path: str, payload: Dict[str, Any]):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
-        f.write(orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_NON_STR_KEYS))
+        f.write(_dumps_pretty(payload))
     safe_replace(tmp, path)
 
 
@@ -62,7 +77,7 @@ def load_json_with_default(path: str, default: Dict[str, Any]) -> Dict[str, Any]
         return dict(default)
     try:
         with open(path, "rb") as f:
-            loaded = orjson.loads(f.read())
+            loaded = _loads_bytes(f.read())
         if isinstance(loaded, dict):
             merged = dict(default)
             merged.update(loaded)
@@ -107,7 +122,7 @@ class RunLogger:
         with self._lock:
             self._counts[level] = self._counts.get(level, 0) + 1
             with open(self.log_path, "ab") as f:
-                f.write(orjson.dumps(row) + b"\n")
+                f.write(_dumps_line(row) + b"\n")
 
     def info(self, event: str, **data):
         """Logs INFO level event / INFO düzeyinde olay günlükler."""

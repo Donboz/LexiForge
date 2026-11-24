@@ -32,21 +32,47 @@ class ModelState(Enum):
 
 def query_openai_compat(prompt: str, api_key: str, model: str,
                         base_url: str, temperature: float = 0.2,
-                        max_tokens: int = 4096) -> str:
-    """OpenAI-compatible API query / OpenAI uyumlu API sorgusu."""
-    from openai import OpenAI
-    client = OpenAI(api_key=api_key, base_url=base_url)
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=temperature,
-        max_tokens=max_tokens,
-        top_p=0.9
-    )
-    content = response.choices[0].message.content
-    if not content or not content.strip():
+                        max_tokens: int = 4096, extra_body: Optional[Dict[str, Any]] = None,
+                        timeout: float = 55.0) -> str:
+    """OpenAI-compatible API query with requests fallback when openai SDK is absent."""
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+        kwargs: Dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "top_p": 0.9,
+        }
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+        response = client.chat.completions.create(**kwargs)
+        content = response.choices[0].message.content
+    except ImportError:
+        import requests
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "top_p": 0.9,
+        }
+        if extra_body:
+            payload.update(extra_body)
+        resp = requests.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=timeout,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"HTTP {resp.status_code} ({model}): {resp.text[:200]}")
+        content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+
+    if not content or not str(content).strip():
         raise ValueError(f"API returned empty content for model {model} / API {model} modeli için boş yanıt döndürdü")
-    return content.strip()
+    return str(content).strip()
 
 
 def query_openrouter(prompt: str, api_key: str, model: str,
@@ -161,26 +187,33 @@ def query_huggingface(prompt: str, api_key: str, model: str,
 
 def query_nvidia(prompt: str, api_key: str, model: str,
                  temperature: float = 0.2, max_tokens: int = 4096) -> str:
-    """NVIDIA NIM API query / NVIDIA NIM API sorgusu."""
-    from openai import OpenAI
-    client = OpenAI(api_key=api_key, base_url="https://integrate.api.nvidia.com/v1")
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=temperature,
-        max_tokens=max_tokens,
-        top_p=0.9
-    )
-
-    reasoning = getattr(response.choices[0].message, "reasoning", None) or getattr(response.choices[0].message, "reasoning_content", None)
-    if reasoning:
-        print(f"\n\033[1;35m[NVIDIA NIM - {model} Reasoning / Düşünme Süreci]:\n{reasoning}\033[0m\n")
-
-    content = response.choices[0].message.content
-    if not content or not content.strip():
-        raise ValueError(f"NVIDIA NIM API returned empty content for model {model} / NVIDIA NIM API {model} modeli için boş yanıt döndürdü")
-    return content.strip()
+    """NVIDIA NIM API query with thinking-disabled optimization and timeout safety."""
+    thinking_kwarg = {"chat_template_kwargs": {"thinking": False, "enable_thinking": False}}
+    try:
+        return query_openai_compat(
+            prompt,
+            api_key,
+            model,
+            "https://integrate.api.nvidia.com/v1",
+            temperature=temperature,
+            max_tokens=max_tokens,
+            extra_body=thinking_kwarg,
+            timeout=55.0,
+        )
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "400" in msg or "422" in msg or "chat_template_kwargs" in msg or "extra" in msg:
+            return query_openai_compat(
+                prompt,
+                api_key,
+                model,
+                "https://integrate.api.nvidia.com/v1",
+                temperature=temperature,
+                max_tokens=max_tokens,
+                extra_body=None,
+                timeout=55.0,
+            )
+        raise
 
 
 # Provider key → query function mapping / Sağlayıcı anahtarı → sorgu fonksiyonu eşleşmesi
@@ -324,8 +357,11 @@ class FallbackChain:
                 continue
             api_key = pcfg.get("api_key", "")
             if not api_key:
-                env_prefixes = [f"GLOSSA_{provider_key.upper()}_API_KEY",
-                                f"{provider_key.upper()}_API_KEY"]
+                env_prefixes = [
+                    f"GLOSSA_{provider_key.upper()}_API_KEY",
+                    f"{provider_key.upper()}_API_KEY",
+                    f"{provider_key.upper()}_API_KEYS",
+                ]
                 for env_name in env_prefixes:
                     val = os.environ.get(env_name)
                     if val:
@@ -334,6 +370,7 @@ class FallbackChain:
             if not api_key:
                 continue
 
+            api_keys = [k.strip() for k in str(api_key).split(",") if k.strip()]
             models = pcfg.get("models", [])
             if not models:
                 continue
@@ -341,8 +378,9 @@ class FallbackChain:
             for model_name in models:
                 if model_filter and model_filter.lower() not in ("all", "all models (fallback chain)", "all models (fallback chain) / tüm modeller (yedek zincir)") and model_name.lower() != model_filter.lower():
                     continue
-                tracker = ModelTracker(provider_key, model_name, api_key)
-                self.trackers.append(tracker)
+                for k_val in api_keys:
+                    tracker = ModelTracker(provider_key, model_name, k_val)
+                    self.trackers.append(tracker)
 
             # Initialize stats / İstatistik başlangıcı
             self.stats["provider_stats"][provider_key] = {
@@ -532,10 +570,12 @@ class FallbackChain:
 # ─── JSON Parse Helper / JSON Çözümleme Yardımcısı ────────────────────────────
 
 def parse_json_response(text: str):
-    """Parses JSON from API text response, sanitizing markdown fences / API yanıtından JSON parse eder, markdown çitlerini temizler."""
-    clean = text.strip()
-    if clean.startswith("```"):
-        clean = clean.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
+    """Parses JSON from API text response, stripping <think> tags and markdown fences."""
+    import re
+    clean = re.sub(r"<think>.*?</think>", "", str(text or ""), flags=re.DOTALL | re.IGNORECASE).strip()
+    fence_match = re.search(r"```(?:json)?\s*(.*?)```", clean, flags=re.DOTALL | re.IGNORECASE)
+    if fence_match:
+        clean = fence_match.group(1).strip()
 
     start_arr = clean.find("[")
     start_obj = clean.find("{")

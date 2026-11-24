@@ -14,3 +14,4 @@ cerebras-cloud-sdk
 groq
 google-genai
 json-repair
+psycopg2-binary

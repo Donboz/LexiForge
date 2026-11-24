@@ -22,6 +22,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 from handlers.fallback_chain import FallbackChain, parse_json_response, load_config
 from handlers.run_logger import RunLogger, now_iso, load_json_with_default, save_json_atomic
+from handlers.lexical_filter import classify_headword, clean_definitions, sanitize_article_and_gender, normalize_domain
 
 
 # ─── Redis Helpers / Redis Yardımcıları ────────────────────────────────────────
@@ -98,17 +99,30 @@ def save_terms(output_path, new_terms, default_domain="GENERAL"):
     for item in new_terms:
         if not isinstance(item, dict) or not item.get("term"):
             continue
-        
+
+        raw_term = (item.get("term") or "").strip()
+        pos = (item.get("partOfSpeech") or "").strip().upper()
+        action, cleaned_headword, _ = classify_headword(
+            raw_term, lang="DE", pos=pos or None, definitions=item.get("definitions")
+        )
+        if action == "delete":
+            continue
+        item["term"] = cleaned_headword
+
         term = (item.get("term") or "").strip()
         pos = (item.get("partOfSpeech") or "").strip().upper()
         if "artikel" in item:
             item["article"] = item.pop("artikel")
+        sanitize_article_and_gender(item)
         gender = get_normalized_gender(item)
 
-        root_dom = item.pop("domain") if "domain" in item else default_domain
-        for d in item.get("definitions", []):
-            if isinstance(d, dict) and "domain" not in d:
-                d["domain"] = root_dom or default_domain
+        root_dom = normalize_domain(item.pop("domain", None), default_domain)
+        cleaned_defs, _ = clean_definitions(term, item.get("definitions") or [])
+        for d in cleaned_defs:
+            d["domain"] = normalize_domain(d.get("domain"), root_dom)
+        item["definitions"] = cleaned_defs
+        if not item["definitions"]:
+            continue
 
         key = (term.lower(), pos, gender)
         if key in lookup:
@@ -126,7 +140,7 @@ def save_terms(output_path, new_terms, default_domain="GENERAL"):
             if not isinstance(existing_defs, list):
                 existing_defs = []
                 existing_item["definitions"] = existing_defs
-            
+
             existing_meanings = { (d.get("meaning") or "").strip().lower() for d in existing_defs if isinstance(d, dict) }
             for new_def in item.get("definitions", []):
                 if not isinstance(new_def, dict):
@@ -139,9 +153,7 @@ def save_terms(output_path, new_terms, default_domain="GENERAL"):
             existing_terms.append(item)
             lookup[key] = item
 
-    with open(output_path, "wb") as f:
-        import orjson
-        f.write(orjson.dumps(existing_terms, option=orjson.OPT_INDENT_2))
+    save_json_atomic(output_path, existing_terms)
 
 
 def _default_progress_state(pdf_name, src_lang, tgt_lang, total_pages, start_page, end_page):
@@ -291,7 +303,8 @@ Kurallar:
   - "domain": "GENERAL" (veya şu listeden en uygun domain: GENERAL | MEDICAL | LEGAL | TECHNICAL | ACADEMIC | etc.).
   - "example_source": Metinde varsa kaynak dilde örnek cümle; yoksa kendin bir tane üret.
   - "example_target": Örnek cümlenin Türkçe karşılığı; örnek yoksa kendin bir tane üret.
-- Sayfa başlığı, dipnot, reklam, indeks ve sayfa numarasını terim diye yazma.
+- Sayfa başlığı, dipnot, reklam, indeks, sıra sayısı (1st, 11th, 11.), tek harf bölüm başlığı (A, B, C) ve sayfa numarasını ("136brodeln –B ruc h" veya "107Cam elması" ön eki) terim diye yazma.
+- Eğer kelimenin başında sayfa numarası yapışmışsa sayıyı temizle; anlam asla kelimenin kendisiyle aynı olmamalıdır.
 - Emin olmadığın bozuk OCR satırlarını atla.
 
 METİN:
@@ -327,7 +340,8 @@ Kurallar:
   - "domain": {domain} veya şu listeden en uygun domain: GENERAL | MEDICAL | LEGAL | TECHNICAL | ACADEMIC | etc.
   - "example_source": Metinde varsa kaynak dilde örnek cümle; yoksa kendin bir tane üret.
   - "example_target": Örnek cümlenin Türkçe karşılığı; örnek yoksa kendin bir tane üret.
-- Sayfa başlığı, dipnot, reklam, indeks ve sayfa numarasını terim diye yazma.
+- Sayfa başlığı, dipnot, reklam, indeks, sıra sayısı (1st, 11th, 11.), tek harf bölüm başlığı (A, B, C) ve sayfa numarasını ("136brodeln –B ruc h" veya "107Cam elması" ön eki) terim diye yazma.
+- Eğer kelimenin başında sayfa numarası yapışmışsa sayıyı temizle; anlam asla kelimenin kendisiyle aynı olmamalıdır.
 - Emin olmadığın bozuk OCR satırlarını atla.
 
 METİN:

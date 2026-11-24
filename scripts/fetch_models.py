@@ -17,14 +17,14 @@ import os
 import sys
 import json
 import time
+import argparse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Set
 
 # Prepend parent directory to sys.path to resolve imports from handlers/
-# Üst dizini sys.path'e ekleyerek handlers/ modüllerini yüklemeyi sağlar
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Windows console UTF-8
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
@@ -35,15 +35,52 @@ from handlers.fallback_chain import load_config
 
 def is_text_model(model_id: str) -> bool:
     mid = model_id.lower()
-    # Exclude embeddings, audio, vision, image, and text-to-speech models
     exclude_keywords = [
         "embed", "moderation", "whisper", "tts", "speech", "audio", "similarity", "rerank", "bge-",
-        "image", "clip", "lyria", "video"
+        "image", "clip", "lyria", "video", "cosmos", "vila", "guard", "shield", "ocr", "parse",
+        "flux", "sdxl", "reward", "canary", "parakeet", "neva", "kosmos", "deplot", "paligemma",
+        "streampetr", "nvclip", "asr", "riva", "steerlm",
     ]
     for kw in exclude_keywords:
         if kw in mid:
             return False
     return True
+
+
+def _probe_nvidia_model(api_key: str, model_id: str) -> tuple[bool, float, str]:
+    url = "https://integrate.api.nvidia.com/v1/chat/completions"
+    for use_kw in (True, False):
+        body = {
+            "model": model_id,
+            "messages": [{"role": "user", "content": 'Return ONLY {"ok":true}'}],
+            "temperature": 0.0,
+            "max_tokens": 24,
+        }
+        if use_kw:
+            body["chat_template_kwargs"] = {"thinking": False, "enable_thinking": False}
+        t0 = time.perf_counter()
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(body).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=14.0) as resp:
+                elapsed = (time.perf_counter() - t0) * 1000.0
+                data = json.loads(resp.read().decode("utf-8"))
+                txt = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if txt and txt.strip():
+                    return True, round(elapsed, 1), "ok"
+                return False, round(elapsed, 1), "empty"
+        except Exception as exc:
+            err = str(exc)
+            if use_kw and ("400" in err or "422" in err):
+                continue
+            return False, round((time.perf_counter() - t0) * 1000.0, 1), err[:60]
+    return False, 0.0, "probe_failed"
 
 
 def is_valid_key(api_key: str) -> bool:
@@ -150,9 +187,17 @@ def fetch_openai_compat(base_url: str, api_key: str) -> List[Dict[str, Any]]:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="LexiForge Model Fetcher & NVIDIA NIM Prober")
+    parser.add_argument("--probe", action="store_true", help="Live-probe NVIDIA NIM chat models and rank by latency")
+    args = parser.parse_args()
+
     print("Loading config.json... / config.json yükleniyor...")
     config = load_config()
-    providers = config.get("api_providers", {})
+    providers = dict(config.get("api_providers", {}))
+
+    env_nv = (os.environ.get("NVIDIA_API_KEYS") or os.environ.get("NVIDIA_API_KEY") or "").strip()
+    if env_nv and "nvidia" not in providers:
+        providers["nvidia"] = {"enabled": True, "api_key": env_nv.split(",")[0].strip()}
     
     # Delete old models.json if it exists
     old_models_path = os.path.join("config", "models.json")
@@ -257,6 +302,24 @@ def main():
                 sorted_free = sorted(free_list, key=lambda x: (-x["context"], x["id"]))
                 sorted_paid = sorted(paid_list, key=lambda x: (-x["context"], x["id"]))
                 
+                if provider_base == "nvidia" and args.probe:
+                    print("  Live-probing NVIDIA NIM candidates...")
+                    with ThreadPoolExecutor(max_workers=6) as pool:
+                        futs = {
+                            pool.submit(_probe_nvidia_model, api_key.split(",")[0].strip(), m["id"]): m
+                            for m in paid_list[:18]
+                        }
+                        for fut in as_completed(futs):
+                            mobj = futs[fut]
+                            ok, lat, st = fut.result()
+                            mobj["probe_ok"] = ok
+                            mobj["probe_latency_ms"] = lat
+                            mobj["probe_status"] = st
+                    sorted_paid = sorted(
+                        paid_list,
+                        key=lambda x: (not x.get("probe_ok", False), x.get("probe_latency_ms", 99999.0), x["id"]),
+                    )
+
                 provider_db = {
                     "free": sorted_free,
                     "paid": sorted_paid

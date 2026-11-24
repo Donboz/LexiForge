@@ -33,3 +33,4 @@ config/models/
 # Orjson and file-save temporary files
 *.tmp
 *.jsonl
+logs/

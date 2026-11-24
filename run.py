@@ -30,7 +30,8 @@ CHOICES = [
     "8. Splitter / Ayırıcı (splitter)",
     "9. Test Redis Connection / Redis Bağlantı Testi (test_redis)",
     "10. Fetch Models / Modelleri Güncelle (fetch_models)",
-    "11. Quit / Çıkış (quit)",
+    "11. NVIDIA NIM Audit & PostgreSQL Sync (nim_sql_sync)",
+    "12. Quit / Çıkış (quit)",
 ]
 
 
@@ -78,6 +79,7 @@ def main():
         "clean_meanings": [sys.executable, os.path.join("scripts", "clean_meanings.py")],
         "splitter": [sys.executable, os.path.join("scripts", "splitter.py")],
         "fetch_models": [sys.executable, os.path.join("scripts", "fetch_models.py")],
+        "nim_sql_sync": [sys.executable, os.path.join("scripts", "nim_sql_sync.py")],
     }
 
     key = None
@@ -99,6 +101,8 @@ def main():
         key = "splitter"
     elif "fetch_models" in choice:
         key = "fetch_models"
+    elif "nim_sql_sync" in choice:
+        key = "nim_sql_sync"
 
     cmd = mapping.get(key) if key else None
     if not cmd:

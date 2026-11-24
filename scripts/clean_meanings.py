@@ -14,14 +14,25 @@ Merged sözlük JSON dosyalarındaki definition.meaning alanlarını temizler:
 
 import os
 import sys
-import orjson
+try:
+    import orjson
+    def _json_loads(raw_bytes):
+        return orjson.loads(raw_bytes)
+    def _json_dumps(obj):
+        return orjson.dumps(obj, option=orjson.OPT_INDENT_2)
+except ImportError:
+    import json
+    def _json_loads(raw_bytes):
+        return json.loads(raw_bytes.decode("utf-8"))
+    def _json_dumps(obj):
+        return json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")
 import argparse
 import re
 from copy import deepcopy
 
 # Prepend parent directory to sys.path to resolve imports from handlers/
-# Üst dizini sys.path'e ekleyerek handlers/ modüllerini yüklemeyi sağlar
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from handlers.lexical_filter import clean_definitions, is_junk_meaning
 
 # Windows console UTF-8 / Windows konsolu için UTF-8 desteği
 if hasattr(sys.stdout, "reconfigure"):
@@ -130,7 +141,7 @@ def process_file(filepath: str, dry_run: bool = False) -> dict:
     print(f"{'='*60}")
 
     with open(filepath, "rb") as f:
-        data = orjson.loads(f.read())
+        data = _json_loads(f.read())
 
     if not isinstance(data, list):
         print(f"  ⚠ Not a JSON list, skipping. / Liste değil, atlanıyor.")
@@ -147,26 +158,28 @@ def process_file(filepath: str, dry_run: bool = False) -> dict:
         if not isinstance(term_obj, dict):
             continue
 
+        term_text = term_obj.get("term", "")
         defs = term_obj.get("definitions", [])
         if not isinstance(defs, list) or not defs:
             continue
 
         total_defs_before += len(defs)
 
-        cleaned, stats = split_and_dedup_definitions(defs)
+        defs_filtered, junk_stats = clean_definitions(term_text, defs)
+        cleaned, stats = split_and_dedup_definitions(defs_filtered)
 
         total_defs_after += len(cleaned)
         total_splits += stats["split_count"]
-        total_dedups += stats["dedup_count"]
+        total_dedups += stats["dedup_count"] + junk_stats["removed"]
 
-        if stats["split_count"] > 0 or stats["dedup_count"] > 0:
+        if stats["split_count"] > 0 or stats["dedup_count"] > 0 or junk_stats["removed"] > 0:
             terms_changed += 1
-            term_name = term_obj.get("term", "?")
+            term_name = term_text or "?"
             article = term_obj.get("article", "")
             art_prefix = f"({article}) " if article else ""
             print(f"  {art_prefix}{term_name}: "
                   f"{len(defs)} defs → {len(cleaned)} defs "
-                  f"(split: {stats['split_count']}, dedup: {stats['dedup_count']})")
+                  f"(split: {stats['split_count']}, dedup/junk: {stats['dedup_count'] + junk_stats['removed']})")
 
         term_obj["definitions"] = cleaned
 
@@ -183,7 +196,7 @@ def process_file(filepath: str, dry_run: bool = False) -> dict:
     if not dry_run and terms_changed > 0:
         tmp_path = filepath + ".tmp"
         with open(tmp_path, "wb") as f:
-            f.write(orjson.dumps(data, option=orjson.OPT_INDENT_2))
+            f.write(_json_dumps(data))
         os.replace(tmp_path, filepath)
         print(f"     ✅ Saved / Kaydedildi: {filepath}")
     elif dry_run:
@@ -211,7 +224,7 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--file", help="Specific merged JSON file name (in data/merged/)")
     group.add_argument("--all", action="store_true", help="Process all files in data/merged/")
-    group.add_argument("--dry-run", action="store_true", help="Only report, do not write files")
+    parser.add_argument("--dry-run", action="store_true", help="Only report, do not write files")
     args = parser.parse_args()
 
     # Collect files / Dosyaları topla

@@ -16,7 +16,14 @@ Glossa Advanced Cleaner & Consolidator / Gelişmiş Temizlik ve Birleştirici
 
 import os
 import sys
-import orjson
+try:
+    import orjson
+    def _json_loads(raw_bytes):
+        return orjson.loads(raw_bytes)
+except ImportError:
+    import json
+    def _json_loads(raw_bytes):
+        return json.loads(raw_bytes.decode("utf-8"))
 import argparse
 import time
 import re
@@ -24,10 +31,9 @@ import shutil
 from collections import defaultdict
 
 # Prepend parent directory to sys.path to resolve imports from handlers/
-# Üst dizini sys.path'e ekleyerek handlers/ modüllerini yüklemeyi sağlar
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Reconfigure stdout/stderr to use UTF-8 / UTF-8 rekonfigürasyonu
+# Reconfigure stdout/stderr to use UTF-8
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
@@ -35,6 +41,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 from handlers.run_logger import RunLogger, now_iso, save_json_atomic
 from handlers.fallback_chain import FallbackChain, parse_json_response, load_config
+from handlers.lexical_filter import classify_headword, clean_definitions, sanitize_article_and_gender, normalize_domain
 
 
 # ─── Helpers / Yardımcılar ─────────────────────────────────────────────────────
@@ -132,11 +139,7 @@ def normalize_term(term_obj, src_lang="DE", default_domain="GENERAL"):
     else:
         term_obj["article"] = existing_art
 
-    root_domain = term_obj.pop("domain", None) or default_domain
-    if isinstance(root_domain, str):
-        root_domain = root_domain.strip().upper()
-    else:
-        root_domain = default_domain
+    root_domain = normalize_domain(term_obj.pop("domain", None), default_domain)
 
     definitions = term_obj.setdefault("definitions", [])
     if not isinstance(definitions, list):
@@ -147,15 +150,16 @@ def normalize_term(term_obj, src_lang="DE", default_domain="GENERAL"):
         if isinstance(d, dict):
             if "meaning" in d and isinstance(d["meaning"], str):
                 d["meaning"] = d["meaning"].strip()
-            if "domain" in d and d["domain"]:
-                d["domain"] = str(d["domain"]).strip().upper()
-            else:
-                d["domain"] = root_domain
+            d["domain"] = normalize_domain(d.get("domain"), root_domain)
             if "example_source" in d and isinstance(d["example_source"], str):
                 d["example_source"] = d["example_source"].strip()
             if "example_target" in d and isinstance(d["example_target"], str):
                 d["example_target"] = d["example_target"].strip()
 
+    cleaned_defs, _ = clean_definitions(term_obj.get("term") or "", definitions)
+    term_obj["definitions"] = cleaned_defs
+    term_obj["lang"] = src_lang
+    sanitize_article_and_gender(term_obj, src_lang=src_lang)
     return term_obj
 
 
@@ -421,7 +425,7 @@ def main():
         print(f"Loading / Yükleniyor: {filename} ({src_lang}->{tgt_lang})...")
         try:
             with open(fpath, "rb") as f:
-                loaded = orjson.loads(f.read())
+                loaded = _json_loads(f.read())
             if not isinstance(loaded, list):
                 print(f"  Warning: {filename} is not a JSON list. Skipping. / Uyarı: {filename} geçerli bir liste değil. Atlanıyor.")
                 continue
@@ -501,44 +505,32 @@ def main():
         term_obj = item["term_obj"]
         term_text = (term_obj.get("term") or "").strip()
         pos = (term_obj.get("partOfSpeech") or "").strip().upper()
-        
-        is_empty = not term_text
-        is_pure_symbol_or_num = bool(re.match(r'^[0-9\W_]+$', term_text)) if term_text else False
-        
-        metadata_keywords = ["projektleitung", "inhaltsverzeichnis", "alle rechte vorbehalten", "lektorat", "seite", "page"]
-        is_metadata = False
-        term_lower = term_text.lower()
-        for kw in metadata_keywords:
-            if kw in term_lower:
-                if kw in ("seite", "page"):
-                    if re.search(r'\b(?:seite|page)\b\s*\d+', term_lower):
-                        is_metadata = True
-                        break
-                elif term_lower == kw or term_lower.startswith(kw + " ") or term_lower.endswith(" " + kw):
-                    is_metadata = True
-                    break
-                    
+
+        action, cleaned_headword, filter_reasons = classify_headword(
+            term_text,
+            lang=item["src_lang"],
+            pos=pos or None,
+            definitions=term_obj.get("definitions"),
+        )
         is_too_long = False
         if pos not in ("IDIOM", "PHRASE"):
-            word_count = len(term_text.split())
-            if word_count > 15 or len(term_text) > 120:
+            word_count = len(cleaned_headword.split())
+            if word_count > 15 or len(cleaned_headword) > 120:
                 is_too_long = True
-                
-        if is_empty or is_pure_symbol_or_num or is_metadata or is_too_long:
-            reasons = []
-            if is_empty: reasons.append("empty")
-            if is_pure_symbol_or_num: reasons.append("pure_symbol_or_numeric")
-            if is_metadata: reasons.append("metadata_or_page")
-            if is_too_long: reasons.append("too_long")
-            
+                filter_reasons.append("too_long")
+
+        if action == "delete" or is_too_long:
             deleted_terms.append({
                 "term": term_text,
-                "reason": ", ".join(reasons),
+                "reason": ", ".join(filter_reasons),
                 "source_file": os.path.basename(item["source_file"]),
                 "src_lang": item["src_lang"],
                 "tgt_lang": item["tgt_lang"]
             })
             continue
+
+        if action == "clean" and cleaned_headword:
+            term_obj["term"] = cleaned_headword
 
         normalized_obj = normalize_term(term_obj, src_lang=item["src_lang"])
         split_objs = split_coordinate_terms([normalized_obj])
@@ -579,7 +571,7 @@ def main():
             print(f"Loading existing merged file / Mevcut birleştirilmiş dosya yükleniyor: {cons_filename}...")
             try:
                 with open(cons_path, "rb") as f:
-                    loaded = orjson.loads(f.read())
+                    loaded = _json_loads(f.read())
                 if isinstance(loaded, list):
                     existing_terms = loaded
             except Exception as e:
