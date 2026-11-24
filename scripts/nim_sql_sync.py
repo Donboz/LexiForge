@@ -20,8 +20,11 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import queue
+import random
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -31,6 +34,7 @@ import uuid
 import zlib
 
 import psycopg2
+from psycopg2 import errors as pg_errors
 from psycopg2.extras import Json, RealDictCursor
 import requests
 
@@ -1078,13 +1082,24 @@ def fetch_suspicious_db_terms(conn, limit: int = 0) -> list[dict[str, Any]]:
         return _attach_definitions(cur, rows)
 
 
-def fetch_anomaly_db_terms(conn, limit: int = 500, offset: int = 0, lang_pair_filter: tuple[str, str] | None = None) -> list[dict[str, Any]]:
+def fetch_anomaly_db_terms(
+    conn,
+    limit: int = 500,
+    offset: int = 0,
+    lang_pair_filter: tuple[str, str] | None = None,
+    last_id: str | None = None,
+) -> list[dict[str, Any]]:
     pair_clause = ""
     params: list[Any] = []
+    keyset_clause = ""
+    if last_id is not None:
+        keyset_clause = " AND t.id > %s"
+        params.append(last_id)
     if lang_pair_filter:
         pair_clause = ' AND t.lang = %s AND EXISTS (SELECT 1 FROM "Definition" df WHERE df."termId" = t.id AND df.language = %s)'
         params.extend([lang_pair_filter[0], lang_pair_filter[1]])
 
+    order_sql = "ORDER BY t.id ASC" if last_id is not None else 'ORDER BY (t.text ~ \'[0-9]\' OR length(trim(t.text)) <= 1) DESC, t."qualityScore" ASC, t.id ASC'
     sql = f"""
         SELECT {_TERM_SELECT_COLS}
         FROM "Term" t
@@ -1106,37 +1121,152 @@ def fetch_anomaly_db_terms(conn, limit: int = 500, offset: int = 0, lang_pair_fi
                   AND (d.language = t.lang OR lower(trim(d.meaning)) = lower(trim(t.text)))
             )
         )
+        {keyset_clause}
         {pair_clause}
-        ORDER BY (t.text ~ '[0-9]' OR length(trim(t.text)) <= 1) DESC, t."qualityScore" ASC, t.id ASC
+        {order_sql}
     """
     if limit and limit > 0:
-        sql += " LIMIT %s OFFSET %s"
-        params.extend([limit, max(0, offset)])
+        if last_id is not None:
+            sql += " LIMIT %s"
+            params.append(limit)
+        else:
+            sql += " LIMIT %s OFFSET %s"
+            params.extend([limit, max(0, offset)])
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(sql, tuple(params))
         rows = [dict(r) for r in cur.fetchall()]
         return _attach_definitions(cur, rows)
 
 
-def fetch_all_db_terms(conn, limit: int = 500, offset: int = 0, lang_pair_filter: tuple[str, str] | None = None) -> list[dict[str, Any]]:
-    where = ""
+def fetch_all_db_terms(
+    conn,
+    limit: int = 500,
+    offset: int = 0,
+    lang_pair_filter: tuple[str, str] | None = None,
+    last_id: str | None = None,
+) -> list[dict[str, Any]]:
+    clauses: list[str] = []
     params: list[Any] = []
+    if last_id is not None:
+        clauses.append("t.id > %s")
+        params.append(last_id)
     if lang_pair_filter:
-        where = ' WHERE t.lang = %s AND EXISTS (SELECT 1 FROM "Definition" df WHERE df."termId" = t.id AND df.language = %s)'
+        clauses.append('t.lang = %s AND EXISTS (SELECT 1 FROM "Definition" df WHERE df."termId" = t.id AND df.language = %s)')
         params.extend([lang_pair_filter[0], lang_pair_filter[1]])
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    order_sql = 'ORDER BY t.id ASC' if last_id is not None else 'ORDER BY t."qualityScore" ASC, t."updatedAt" ASC, t.id ASC'
     sql = f"""
         SELECT {_TERM_SELECT_COLS}
         FROM "Term" t
         {where}
-        ORDER BY t."qualityScore" ASC, t."updatedAt" ASC, t.id ASC
+        {order_sql}
     """
     if limit and limit > 0:
-        sql += " LIMIT %s OFFSET %s"
-        params.extend([limit, max(0, offset)])
+        if last_id is not None:
+            sql += " LIMIT %s"
+            params.append(limit)
+        else:
+            sql += " LIMIT %s OFFSET %s"
+            params.extend([limit, max(0, offset)])
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(sql, tuple(params))
         rows = [dict(r) for r in cur.fetchall()]
         return _attach_definitions(cur, rows)
+
+
+def discover_db_lang_pairs(conn, lang_pair_filter: tuple[str, str] | None = None) -> list[tuple[str, str, int]]:
+    """Discover all distinct (src_lang, tgt_lang, term_count) pairs in PostgreSQL."""
+    with conn.cursor() as cur:
+        if lang_pair_filter:
+            cur.execute(
+                """
+                SELECT t.lang::text AS src_lang, d.language::text AS tgt_lang, COUNT(DISTINCT t.id) AS cnt
+                FROM "Term" t
+                JOIN "Definition" d ON d."termId" = t.id
+                WHERE t.lang = %s AND d.language = %s
+                GROUP BY t.lang, d.language
+                ORDER BY src_lang ASC, tgt_lang ASC
+                """,
+                (lang_pair_filter[0], lang_pair_filter[1]),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT t.lang::text AS src_lang, d.language::text AS tgt_lang, COUNT(DISTINCT t.id) AS cnt
+                FROM "Term" t
+                JOIN "Definition" d ON d."termId" = t.id
+                GROUP BY t.lang, d.language
+                ORDER BY src_lang ASC, tgt_lang ASC
+                """
+            )
+        return [(str(r[0]), str(r[1]), int(r[2])) for r in cur.fetchall()]
+
+
+def fetch_pair_chunk(
+    conn,
+    src_lang: str,
+    tgt_lang: str,
+    last_id: str = "",
+    chunk_size: int = 50,
+    recheck: bool = False,
+) -> list[dict[str, Any]]:
+    """Keyset-paginated chunk fetcher for one (src_lang, tgt_lang) pair."""
+    work_filter = ""
+    if not recheck:
+        work_filter = """
+            AND (
+                t."enrichedAt" IS NULL
+                OR t."qualityScore" < 85
+                OR t."partOfSpeech" IS NULL
+                OR t.level = 'UNKNOWN'
+                OR t.lemma IS NULL
+                OR t.script IS NULL
+                OR t.text ~ '[0-9]'
+                OR length(trim(t.text)) <= 1
+                OR (t.lang IN ('TR', 'EN') AND t.article IS NOT NULL)
+                OR lower(coalesce(t.article, '')) IN ('f','m','n','s','adj','adv','v','is','pl')
+                OR d.language = t.lang
+                OR lower(trim(d.meaning)) = lower(trim(t.text))
+            )
+        """
+    sql = f"""
+        SELECT {_TERM_SELECT_COLS},
+               d.id AS "_pair_def_id", d.meaning AS "_pair_meaning",
+               d.language AS "_pair_tgt_lang", d.domain::text AS "_pair_domain",
+               d.register::text AS "_pair_register"
+        FROM "Term" t
+        JOIN LATERAL (
+            SELECT id, meaning, language, domain, register
+            FROM "Definition" d
+            WHERE d."termId" = t.id AND d.language = %s
+            ORDER BY (lower(trim(d.meaning)) = lower(trim(t.text))) DESC, d."updatedAt" ASC
+            LIMIT 1
+        ) d ON true
+        WHERE t.lang = %s
+          AND t.id > %s
+          {work_filter}
+        ORDER BY t.id ASC
+        LIMIT %s
+    """
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(sql, (tgt_lang, src_lang, last_id or "", max(1, chunk_size)))
+        out: list[dict[str, Any]] = []
+        for raw in cur.fetchall():
+            r = dict(raw)
+            def_item = {
+                "id": r.pop("_pair_def_id"),
+                "meaning": r.pop("_pair_meaning"),
+                "language": r.pop("_pair_tgt_lang"),
+                "domain": r.pop("_pair_domain"),
+                "register": r.pop("_pair_register"),
+            }
+            r["auditKey"] = f"{r['termId']}@{tgt_lang}"
+            r["inDb"] = True
+            r["targetLang"] = tgt_lang
+            r["pair"] = f"{src_lang}->{tgt_lang}"
+            r["definitions"] = [def_item]
+            out.append(r)
+        return out
 
 
 def fetch_stratified_lang_pair_terms(conn, per_pair: int = 3, lang_pair_filter: tuple[str, str] | None = None) -> list[dict[str, Any]]:
@@ -1244,43 +1374,107 @@ def _classify_pair_verdict(orig: dict[str, Any], prop: dict[str, Any]) -> tuple[
     return "DOGRU", lang_err, grammar_err
 
 
-def print_per_pair_summary(records: list[tuple[dict[str, Any], dict[str, Any]]]) -> dict[str, Any]:
-    by_pair: dict[str, dict[str, Any]] = {}
-    totals = {"tested": 0, "dogru": 0, "yanlis": 0, "cop": 0, "lang_err": 0, "grammar_err": 0}
+def _apply_stage2_guards(orig: dict[str, Any], raw_prop: dict[str, Any]) -> dict[str, Any]:
+    """Enforce hard safeguards against false deletions or protected headword corruption."""
+    prop = dict(raw_prop or {})
+    orig_text = orig.get("text") or ""
+    clean_hint = orig.get("clean_hint")
+    if str(prop.get("action") or "KEEP").upper() == "DELETE" and (
+        clean_hint
+        or is_protected_headword(orig_text)
+        or (
+            orig.get("definitions")
+            and classify_headword(
+                orig_text,
+                orig.get("lang", "DE"),
+                orig.get("partOfSpeech"),
+                orig.get("definitions"),
+            )[0] == "keep"
+        )
+    ):
+        prop["action"] = "FIX"
+        prop["verdict"] = "NEEDS_FIX"
+        prop["text"] = clean_hint or orig_text
+        prop["reason"] = f"guarded_fix_from_delete: {prop.get('reason') or ''}".strip()
+    if is_protected_headword(orig_text):
+        prop["text"] = orig_text
+    elif clean_hint and not prop.get("text"):
+        prop["text"] = clean_hint
+    return prop
 
-    for orig, prop in records:
-        pair = orig.get("pair") or f"{orig.get('lang', '?')}->{orig.get('targetLang', '?')}"
-        bucket, l_err, g_err = _classify_pair_verdict(orig, prop)
-        entry = by_pair.setdefault(pair, {
-            "pair": pair, "tested": 0, "dogru": 0, "yanlis": 0, "cop": 0,
-            "lang_err": 0, "grammar_err": 0, "samples": [],
+
+def _is_retryable_pg_error(exc: Exception) -> bool:
+    retry_types = tuple(
+        t
+        for t in (
+            getattr(pg_errors, "DeadlockDetected", None),
+            getattr(pg_errors, "LockNotAvailable", None),
+            getattr(pg_errors, "SerializationFailure", None),
+        )
+        if t is not None
+    )
+    if retry_types and isinstance(exc, retry_types):
+        return True
+    msg = str(exc).lower()
+    return "deadlock detected" in msg or "could not obtain lock" in msg or "could not serialize access" in msg
+
+
+def _run_tx_with_retry(conn, fn, *args, max_retries: int = 4, **kwargs):
+    """Execute a PostgreSQL transaction helper with exponential jitter on deadlock/lock contention."""
+    for attempt in range(max_retries + 1):
+        try:
+            return fn(conn, *args, **kwargs)
+        except Exception as exc:
+            if not _is_retryable_pg_error(exc) or attempt >= max_retries:
+                raise
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            time.sleep(0.1 * (2 ** attempt) + random.uniform(0.0, 0.15))
+
+
+def _record_pair_outcome(
+    by_pair: dict[str, dict[str, Any]],
+    totals: dict[str, int],
+    orig: dict[str, Any],
+    prop: dict[str, Any],
+    sample_cap: int = 3,
+) -> None:
+    pair = orig.get("pair") or f"{orig.get('lang', '?')}->{orig.get('targetLang', '?')}"
+    bucket, l_err, g_err = _classify_pair_verdict(orig, prop)
+    entry = by_pair.setdefault(pair, {
+        "pair": pair, "tested": 0, "dogru": 0, "yanlis": 0, "cop": 0,
+        "lang_err": 0, "grammar_err": 0, "samples": [],
+    })
+    entry["tested"] += 1
+    totals["tested"] += 1
+    if bucket == "DOGRU":
+        entry["dogru"] += 1
+        totals["dogru"] += 1
+    elif bucket == "COP":
+        entry["cop"] += 1
+        totals["cop"] += 1
+    else:
+        entry["yanlis"] += 1
+        totals["yanlis"] += 1
+    if l_err:
+        entry["lang_err"] += 1
+        totals["lang_err"] += 1
+    if g_err:
+        entry["grammar_err"] += 1
+        totals["grammar_err"] += 1
+    if len(entry["samples"]) < sample_cap and (bucket != "DOGRU" or not entry["samples"]):
+        entry["samples"].append({
+            "text": orig.get("text"),
+            "verdict": bucket,
+            "fixedText": prop.get("text"),
+            "fixedLang": prop.get("lang"),
+            "issues": prop.get("issues") or [],
         })
-        entry["tested"] += 1
-        totals["tested"] += 1
-        if bucket == "DOGRU":
-            entry["dogru"] += 1
-            totals["dogru"] += 1
-        elif bucket == "COP":
-            entry["cop"] += 1
-            totals["cop"] += 1
-        else:
-            entry["yanlis"] += 1
-            totals["yanlis"] += 1
-        if l_err:
-            entry["lang_err"] += 1
-            totals["lang_err"] += 1
-        if g_err:
-            entry["grammar_err"] += 1
-            totals["grammar_err"] += 1
-        if len(entry["samples"]) < 2 and (bucket != "DOGRU" or not entry["samples"]):
-            entry["samples"].append({
-                "text": orig.get("text"),
-                "verdict": bucket,
-                "fixedText": prop.get("text"),
-                "fixedLang": prop.get("lang"),
-                "issues": prop.get("issues") or [],
-            })
 
+
+def print_pair_aggregate_summary(by_pair: dict[str, dict[str, Any]], totals: dict[str, int]) -> dict[str, Any]:
     print("\n=== Dil Çifti Doğrulama Özeti (Per-Language-Pair Report) ===")
     print(f"{'Dil Çifti':<10} | {'Test':>4} | {'DOĞRU':>5} | {'YANLIŞ':>6} | {'ÇÖP':>4} | {'DilH':>4} | {'GramH':>5} | Örnek Bulgu")
     print("-" * 96)
@@ -1302,6 +1496,376 @@ def print_per_pair_summary(records: list[tuple[dict[str, Any], dict[str, Any]]])
     return {"totals": totals, "pairs": list(by_pair.values())}
 
 
+def print_per_pair_summary(records: list[tuple[dict[str, Any], dict[str, Any]]]) -> dict[str, Any]:
+    by_pair: dict[str, dict[str, Any]] = {}
+    totals = {"tested": 0, "dogru": 0, "yanlis": 0, "cop": 0, "lang_err": 0, "grammar_err": 0}
+    for orig, prop in records:
+        _record_pair_outcome(by_pair, totals, orig, prop, sample_cap=2)
+    return print_pair_aggregate_summary(by_pair, totals)
+
+
+def _load_sweep_state(path: Path, reset: bool = False) -> dict[str, Any]:
+    if not reset and path.exists():
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("pairs"), dict):
+            return data
+    return {"meta": {"createdAt": utc_now(), "updatedAt": utc_now()}, "pairs": {}}
+
+
+def _append_jsonl(lock: threading.Lock, path: Path, event: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(event, ensure_ascii=False) + "\n"
+    with lock:
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+
+
+def _build_nim_payload_item(r: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "termId": r["auditKey"],
+        "text": r["text"],
+        "cleanHint": r.get("clean_hint"),
+        "detectedAnomalies": r.get("clean_reasons") or [],
+        "lang": r["lang"],
+        "targetLang": r.get("targetLang"),
+        "partOfSpeech": r.get("partOfSpeech"),
+        "gender": r.get("gender"),
+        "article": r.get("article"),
+        "plural": r.get("plural"),
+        "level": r.get("level"),
+        "script": r.get("script"),
+        "lemma": r.get("lemma"),
+        "primaryDomain": r.get("primaryDomain"),
+        "definitions": r.get("definitions", [])[:4],
+    }
+
+
+def _apply_sql_item_tx(
+    conn,
+    orig: dict[str, Any],
+    raw_prop: dict[str, Any],
+    dry_run: bool,
+) -> tuple[str, str, dict[str, Any]]:
+    """Run guarded Stage-2 SQL action on one entry; returns (stat_key, apply_action_str, guarded_prop)."""
+    prop = _apply_stage2_guards(orig, raw_prop)
+    orig_text = orig.get("text") or ""
+    tid = orig.get("termId")
+    act_upper = str(prop.get("action") or "KEEP").upper()
+
+    if act_upper == "DELETE":
+        res = _run_tx_with_retry(
+            conn,
+            purge_junk_row_tx,
+            orig,
+            [prop.get("reason") or "llm_flagged_junk"],
+            dry_run=dry_run,
+        )
+        return ("dry_run" if dry_run else "deleted"), res, prop
+    if not orig.get("inDb", True) or str(tid).startswith(("pdf:", "json:")):
+        res = _run_tx_with_retry(conn, upsert_external_term_tx, orig, prop, dry_run=dry_run)
+        if dry_run:
+            return "dry_run", res, prop
+        return ("inserted" if "inserted" in res else "updated"), res, prop
+    if act_upper == "KEEP" and str(prop.get("verdict") or "").upper() == "CORRECT":
+        res = _run_tx_with_retry(conn, apply_fix_row_tx, tid, {**orig, **prop, "text": orig_text}, dry_run=dry_run)
+        return ("dry_run" if dry_run else "kept"), res, prop
+
+    res = _run_tx_with_retry(conn, apply_fix_row_tx, tid, prop, dry_run=dry_run)
+    if dry_run:
+        return "dry_run", res, prop
+    return ("merged" if "merged_into" in res else "updated"), res, prop
+
+
+def run_pair_sweep_engine(
+    args: argparse.Namespace,
+    db_url: str,
+    nim: NimPool,
+    lang_pair_filter: tuple[str, str] | None,
+    t_start: float,
+) -> int:
+    """Concurrent multi-pair wave queue: up to N workers each drain assigned (src, tgt) pairs chunk-by-chunk."""
+    state_path = Path(args.state_file)
+    if not state_path.is_absolute():
+        state_path = Path.cwd() / state_path
+    jsonl_path = Path(args.jsonl_log)
+    if not jsonl_path.is_absolute():
+        jsonl_path = Path.cwd() / jsonl_path
+
+    state = _load_sweep_state(state_path, reset=args.reset_state or args.dry_run)
+
+    init_conn = psycopg2.connect(db_url)
+    init_conn.autocommit = False
+    try:
+        all_pairs = discover_db_lang_pairs(init_conn, lang_pair_filter=lang_pair_filter)
+    finally:
+        init_conn.close()
+
+    if not all_pairs:
+        print("[Sweep] No language pairs found in PostgreSQL.", flush=True)
+        return 0
+
+    pair_queue: queue.Queue[tuple[str, str, int]] = queue.Queue()
+    skipped_done = 0
+    for src_lang, tgt_lang, total_cnt in all_pairs:
+        pkey = f"{src_lang}->{tgt_lang}"
+        pstate = state["pairs"].setdefault(
+            pkey,
+            {
+                "last_id": "",
+                "total": total_cnt,
+                "processed": 0,
+                "updated": 0,
+                "merged": 0,
+                "deleted": 0,
+                "kept": 0,
+                "dry_run": 0,
+                "failed": 0,
+                "done": False,
+            },
+        )
+        pstate["total"] = total_cnt
+        if args.recheck:
+            pstate["done"] = False
+            pstate["last_id"] = ""
+        if pstate.get("done") and not args.dry_run:
+            skipped_done += 1
+        else:
+            pair_queue.put((src_lang, tgt_lang, total_cnt))
+
+    if not args.dry_run:
+        save_json_atomic(state_path, state)
+
+    pending_pairs = pair_queue.qsize()
+    print(
+        f"[Sweep] Discovered {len(all_pairs)} pairs (queued={pending_pairs}, already_done={skipped_done}) | "
+        f"workers={args.workers}, limit_per_pair={'unlimited' if args.limit == 0 else args.limit}, "
+        f"chunk_size={args.chunk_size}, batch_size={args.batch_size}, dry_run={args.dry_run}",
+        flush=True,
+    )
+    if pending_pairs == 0:
+        return 0
+
+    stop_event = threading.Event()
+    prev_sigint = None
+    prev_sigterm = None
+
+    def _handle_stop(signum, _frame):
+        print(f"\n[Sweep] Received signal {signum}; draining active transactions and saving checkpoint...", flush=True)
+        stop_event.set()
+
+    try:
+        prev_sigint = signal.getsignal(signal.SIGINT)
+        prev_sigterm = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGINT, _handle_stop)
+        signal.signal(signal.SIGTERM, _handle_stop)
+    except ValueError:
+        pass
+
+    state_lock = threading.Lock()
+    jsonl_lock = threading.Lock()
+    agg_by_pair: dict[str, dict[str, Any]] = {}
+    agg_totals = {"tested": 0, "dogru": 0, "yanlis": 0, "cop": 0, "lang_err": 0, "grammar_err": 0}
+    sample_items_for_report: list[dict[str, Any]] = []
+    global_stats = {"updated": 0, "merged": 0, "deleted": 0, "kept": 0, "dry_run": 0, "failed": 0}
+
+    def pair_worker(worker_num: int) -> None:
+        wconn = psycopg2.connect(db_url)
+        wconn.autocommit = False
+        try:
+            while not stop_event.is_set():
+                try:
+                    src_lang, tgt_lang, total_cnt = pair_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+                pkey = f"{src_lang}->{tgt_lang}"
+                try:
+                    with state_lock:
+                        pstate = state["pairs"][pkey]
+                        last_id = pstate.get("last_id") or ""
+                    local_seen = 0
+
+                    while not stop_event.is_set():
+                        if args.limit > 0 and local_seen >= args.limit:
+                            break
+                        req_lim = args.chunk_size if args.limit <= 0 else min(args.chunk_size, args.limit - local_seen)
+                        chunk = fetch_pair_chunk(
+                            wconn, src_lang, tgt_lang, last_id=last_id, chunk_size=req_lim, recheck=args.recheck
+                        )
+                        if not chunk:
+                            with state_lock:
+                                state["pairs"][pkey]["done"] = True
+                                state["pairs"][pkey]["completedAt"] = utc_now()
+                                if not args.dry_run:
+                                    save_json_atomic(state_path, state)
+                            print(f"  [Pair DONE W#{worker_num}] {pkey} (total={total_cnt})", flush=True)
+                            break
+
+                        last_id = chunk[-1]["termId"]
+                        nim_queue: list[dict[str, Any]] = []
+                        chunk_purged = 0
+
+                        for r in chunk:
+                            local_seen += 1
+                            act, cleaned_text, reasons = classify_headword(
+                                r["text"], lang=r["lang"], pos=r.get("partOfSpeech"), definitions=r.get("definitions")
+                            )
+                            lang_anomalies = detect_language_anomaly(
+                                r["text"], r["lang"], article=r.get("article"), definitions=r.get("definitions")
+                            )
+                            if act == "delete" and args.purge_junk:
+                                try:
+                                    res = _run_tx_with_retry(
+                                        wconn, purge_junk_row_tx, r, reasons, dry_run=args.dry_run
+                                    )
+                                    prop_del = {"action": "DELETE", "verdict": "DELETE", "issues": reasons, "reason": ",".join(reasons)}
+                                    with state_lock:
+                                        _record_pair_outcome(agg_by_pair, agg_totals, r, prop_del)
+                                        skey = "dry_run" if args.dry_run else "deleted"
+                                        state["pairs"][pkey][skey] += 1
+                                        state["pairs"][pkey]["processed"] += 1
+                                        global_stats[skey] += 1
+                                    chunk_purged += 1
+                                    if not args.dry_run:
+                                        _append_jsonl(jsonl_lock, jsonl_path, {
+                                            "type": "purge", "pair": pkey, "termId": r["termId"],
+                                            "text": r["text"], "reasons": reasons, "action": res, "at": utc_now(),
+                                            "snapshot": r,
+                                        })
+                                except Exception as exc:
+                                    with state_lock:
+                                        state["pairs"][pkey]["failed"] += 1
+                                        global_stats["failed"] += 1
+                                    print(f"  [ERROR W#{worker_num} {pkey}] purge {r['termId']}: {exc}", flush=True)
+                                continue
+
+                            if act == "clean":
+                                r["clean_hint"] = cleaned_text
+                                r["clean_reasons"] = reasons + lang_anomalies
+                            elif lang_anomalies:
+                                r["clean_reasons"] = lang_anomalies
+                            nim_queue.append(r)
+
+                        chunk_fixed = 0
+                        for b_idx in range(0, len(nim_queue), max(1, args.batch_size)):
+                            if stop_event.is_set():
+                                break
+                            batch = nim_queue[b_idx : b_idx + max(1, args.batch_size)]
+                            payload = [_build_nim_payload_item(x) for x in batch]
+                            user_prompt = "Audit language & 12-lang grammar for each entry. Return ONLY a JSON array:\n" + json.dumps(payload, ensure_ascii=False)
+                            try:
+                                parsed, chan_id = nim.chat_json(SYSTEM_PROMPT, user_prompt)
+                            except Exception as exc:
+                                with state_lock:
+                                    state["pairs"][pkey]["failed"] += len(batch)
+                                    global_stats["failed"] += len(batch)
+                                print(f"  [NIM ERROR W#{worker_num} {pkey}]: {exc}", flush=True)
+                                continue
+
+                            if isinstance(parsed, dict):
+                                parsed = parsed.get("items") or parsed.get("results") or [parsed]
+                            by_id = {str(x.get("termId")): x for x in parsed if isinstance(x, dict) and x.get("termId")}
+
+                            for r in batch:
+                                fix = by_id.get(r["auditKey"])
+                                if not fix:
+                                    continue
+                                try:
+                                    skey, apply_res, g_prop = _apply_sql_item_tx(wconn, r, fix, dry_run=args.dry_run)
+                                    chunk_fixed += 1
+                                    with state_lock:
+                                        _record_pair_outcome(agg_by_pair, agg_totals, r, g_prop)
+                                        state["pairs"][pkey][skey] += 1
+                                        state["pairs"][pkey]["processed"] += 1
+                                        global_stats[skey] += 1
+                                        if args.report_file and len(sample_items_for_report) < 500:
+                                            sample_items_for_report.append({
+                                                "pair": pkey, "text": r.get("text"), "lang": r.get("lang"),
+                                                "verdict": g_prop.get("verdict"), "action": g_prop.get("action"),
+                                                "langValid": g_prop.get("langValid"), "grammarValid": g_prop.get("grammarValid"),
+                                                "issues": g_prop.get("issues"), "fixedText": g_prop.get("text"),
+                                                "fixedLang": g_prop.get("lang"), "primaryDomain": g_prop.get("primaryDomain"),
+                                                "channel": chan_id, "applyAction": apply_res,
+                                            })
+                                    if not args.dry_run:
+                                        _append_jsonl(jsonl_lock, jsonl_path, {
+                                            "type": "fix", "pair": pkey, "termId": r["termId"],
+                                            "text": r["text"], "channel": chan_id, "applyAction": apply_res,
+                                            "proposed": g_prop, "at": utc_now(),
+                                        })
+                                except Exception as exc:
+                                    with state_lock:
+                                        state["pairs"][pkey]["failed"] += 1
+                                        global_stats["failed"] += 1
+                                    print(f"  [SQL ERROR W#{worker_num} {pkey}] {r['termId']}: {exc}", flush=True)
+
+                        with state_lock:
+                            state["pairs"][pkey]["last_id"] = last_id
+                            if not args.dry_run:
+                                save_json_atomic(state_path, state)
+                        print(
+                            f"  [Sweep W#{worker_num} {pkey}] chunk={len(chunk)} purged={chunk_purged} "
+                            f"audited={chunk_fixed} total_seen={local_seen}",
+                            flush=True,
+                        )
+                finally:
+                    pair_queue.task_done()
+        finally:
+            wconn.close()
+
+    n_workers = max(1, min(args.workers, pending_pairs))
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futs = [pool.submit(pair_worker, wid + 1) for wid in range(n_workers)]
+        for fut in as_completed(futs):
+            fut.result()
+
+    if prev_sigint is not None:
+        try:
+            signal.signal(signal.SIGINT, prev_sigint)
+            signal.signal(signal.SIGTERM, prev_sigterm)
+        except ValueError:
+            pass
+
+    if not args.dry_run:
+        save_json_atomic(state_path, state)
+
+    print(f"[Sweep Stage 2] Summary: {global_stats}", flush=True)
+    if agg_by_pair:
+        summary = print_pair_aggregate_summary(agg_by_pair, agg_totals)
+        if args.report_file:
+            rep_path = Path(args.report_file)
+            if not rep_path.is_absolute():
+                rep_path = Path.cwd() / rep_path
+            rep_path.parent.mkdir(parents=True, exist_ok=True)
+            rep_path.write_text(
+                json.dumps(
+                    {
+                        "meta": {
+                            "createdAt": utc_now(),
+                            "source": args.source,
+                            "mode": args.mode,
+                            "workers": n_workers,
+                            "dryRun": args.dry_run,
+                            "elapsedSec": round(time.perf_counter() - t_start, 2),
+                            "channels": [{k: v for k, v in ch.items() if k != "key"} for ch in nim.channels],
+                            "globalStats": global_stats,
+                        },
+                        "summary": summary,
+                        "items": sample_items_for_report,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            print(f"[Report] Saved sweep summary to {rep_path}", flush=True)
+
+    if nim.channels:
+        print(f"\n{nim.format_channel_stats()}", flush=True)
+    print(f"[Total Elapsed] {time.perf_counter() - t_start:.2f}s", flush=True)
+    return 1 if global_stats["failed"] > 0 else 0
+
+
 # ─── Main CLI ──────────────────────────────────────────────────────────────────
 
 def _parse_lang_pair(raw: str | None) -> tuple[str, str] | None:
@@ -1317,17 +1881,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="LexiForge NVIDIA NIM -> Glossa PostgreSQL Manual Audit & Repair CLI")
     parser.add_argument("--fetch-models", action="store_true", help="Fetch & live-probe NVIDIA NIM /v1/models and exit.")
     parser.add_argument("--source", choices=["db", "pdf", "json"], default="db", help="Input audit source (default: db).")
-    parser.add_argument("--mode", choices=["junk", "anomalies", "all", "pairs"], default="anomalies", help="Audit mode (default: anomalies).")
+    parser.add_argument("--mode", choices=["junk", "anomalies", "all", "pairs", "sweep"], default="anomalies", help="Audit mode (default: anomalies).")
     parser.add_argument("--per-pair", type=int, default=3, help="Sample size per language pair in --mode pairs (default: 3).")
+    parser.add_argument("--chunk-size", type=int, default=50, help="Keyset chunk size for sweep / unlimited streaming (default: 50).")
     parser.add_argument("--lang-pair", help="Filter single language pair like DE-TR.")
     parser.add_argument("--offset", type=int, default=0, help="Pagination offset for --mode all|anomalies.")
     parser.add_argument("--pdf-path", default="/root/Glossa/public/downloads/Glossa_Buyuk_Sozluk.pdf", help="PDF path when --source pdf.")
     parser.add_argument("--input", help="JSON path when --source json.")
     parser.add_argument("--out-json", help="Optional cleaned JSON output file when --source json.")
     parser.add_argument("--report-file", help="Optional JSON summary report output file (safe during --dry-run).")
+    parser.add_argument("--state-file", default="logs/lexiforge_sweep_state.json", help="Resumable per-pair checkpoint state file for --mode sweep.")
+    parser.add_argument("--jsonl-log", default="logs/lexiforge_sweep_audit.jsonl", help="Append-only JSONL audit log for --mode sweep.")
+    parser.add_argument("--recheck", action="store_true", help="Re-audit already enriched terms (qualityScore >= 85) in --mode sweep.")
+    parser.add_argument("--reset-state", action="store_true", help="Reset existing --state-file before starting --mode sweep.")
     parser.add_argument("--env-file", help="Path to .env containing DATABASE_URL and NVIDIA_API_KEYS.")
     parser.add_argument("--purge-junk", action="store_true", help="Delete verified non-lexical junk with JSON backup.")
-    parser.add_argument("--limit", type=int, default=50, help="Max NIM repair terms (0 = unlimited). Default: 50.")
+    parser.add_argument("--limit", type=int, default=50, help="Max terms (or per pair in --mode sweep); 0 = unlimited. Default: 50.")
     parser.add_argument("--batch-size", type=int, default=5, help="Terms per NVIDIA NIM request. Default: 5.")
     parser.add_argument("--workers", type=int, default=10, help="Concurrent NIM workers across (key x model) channels. Default: 10.")
     parser.add_argument("--audit-file", default="logs/lexiforge_nim_sql_audit.json", help="Resumable JSON audit & backup log.")
@@ -1349,6 +1918,105 @@ def main() -> int:
         print(f"=== Built {len(nim.channels)} parallel channels ({len(nim.models)} models x {len(nim.api_keys)} keys) ===", flush=True)
         if args.fetch_models:
             return 0
+
+    if args.mode == "sweep":
+        if args.source != "db":
+            raise ValueError("--mode sweep operates directly on PostgreSQL (--source db).")
+        return run_pair_sweep_engine(args, db_url, nim, lang_pair_filter, t_start)
+
+    # Unlimited keyset streaming for --source db --mode anomalies|all --limit 0 (no silent 500 cap)
+    if args.source == "db" and args.mode in {"anomalies", "all"} and args.limit == 0 and not args.apply_only:
+        conn_stream = psycopg2.connect(db_url)
+        conn_stream.autocommit = False
+        stream_by_pair: dict[str, dict[str, Any]] = {}
+        stream_totals = {"tested": 0, "dogru": 0, "yanlis": 0, "cop": 0, "lang_err": 0, "grammar_err": 0}
+        stream_stats = {"updated": 0, "merged": 0, "deleted": 0, "kept": 0, "dry_run": 0, "failed": 0}
+        jsonl_path = Path(args.jsonl_log)
+        if not jsonl_path.is_absolute():
+            jsonl_path = Path.cwd() / jsonl_path
+        jlock = threading.Lock()
+        last_id = ""
+        chunk_num = 0
+        try:
+            fetcher = fetch_anomaly_db_terms if args.mode == "anomalies" else fetch_all_db_terms
+            while True:
+                rows = fetcher(
+                    conn_stream,
+                    limit=max(1, args.chunk_size),
+                    lang_pair_filter=lang_pair_filter,
+                    last_id=last_id,
+                )
+                if not rows:
+                    break
+                chunk_num += 1
+                last_id = rows[-1]["termId"]
+                nim_items: list[dict[str, Any]] = []
+                for r in rows:
+                    r["auditKey"] = r["termId"]
+                    act, cleaned_text, reasons = classify_headword(
+                        r["text"], lang=r["lang"], pos=r.get("partOfSpeech"), definitions=r.get("definitions")
+                    )
+                    lang_anomalies = detect_language_anomaly(
+                        r["text"], r["lang"], article=r.get("article"), definitions=r.get("definitions")
+                    )
+                    if act == "delete" and args.purge_junk:
+                        res = _run_tx_with_retry(conn_stream, purge_junk_row_tx, r, reasons, dry_run=args.dry_run or args.generate_only)
+                        prop_del = {"action": "DELETE", "verdict": "DELETE", "issues": reasons}
+                        _record_pair_outcome(stream_by_pair, stream_totals, r, prop_del)
+                        stream_stats["dry_run" if (args.dry_run or args.generate_only) else "deleted"] += 1
+                        if not (args.dry_run or args.generate_only):
+                            _append_jsonl(jlock, jsonl_path, {"type": "purge", "termId": r["termId"], "text": r["text"], "reasons": reasons, "action": res, "at": utc_now()})
+                        continue
+                    if act == "clean":
+                        r["clean_hint"] = cleaned_text
+                        r["clean_reasons"] = reasons + lang_anomalies
+                    elif lang_anomalies:
+                        r["clean_reasons"] = lang_anomalies
+                    nim_items.append(r)
+
+                batches = [nim_items[i : i + max(1, args.batch_size)] for i in range(0, len(nim_items), max(1, args.batch_size))]
+                chunk_results: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+                rlock = threading.Lock()
+
+                def _run_sbatch(b: list[dict[str, Any]]) -> None:
+                    payload = [_build_nim_payload_item(x) for x in b]
+                    parsed, cid = nim.chat_json(
+                        SYSTEM_PROMPT,
+                        "Audit language & 12-lang grammar for each entry. Return ONLY a JSON array:\n" + json.dumps(payload, ensure_ascii=False),
+                    )
+                    if isinstance(parsed, dict):
+                        parsed = parsed.get("items") or parsed.get("results") or [parsed]
+                    by_id = {str(x.get("termId")): x for x in parsed if isinstance(x, dict) and x.get("termId")}
+                    with rlock:
+                        for x in b:
+                            if x["auditKey"] in by_id:
+                                chunk_results.append((x, by_id[x["auditKey"]], cid))
+
+                if batches:
+                    with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+                        for fut in as_completed([pool.submit(_run_sbatch, b) for b in batches]):
+                            fut.result()
+
+                if not args.generate_only:
+                    for orig, fix, cid in chunk_results:
+                        try:
+                            skey, ares, gprop = _apply_sql_item_tx(conn_stream, orig, fix, dry_run=args.dry_run)
+                            _record_pair_outcome(stream_by_pair, stream_totals, orig, gprop)
+                            stream_stats[skey] += 1
+                            if not args.dry_run:
+                                _append_jsonl(jlock, jsonl_path, {"type": "fix", "termId": orig["termId"], "channel": cid, "applyAction": ares, "proposed": gprop, "at": utc_now()})
+                        except Exception as exc:
+                            stream_stats["failed"] += 1
+                            print(f"  [Stream SQL ERROR] {orig['termId']}: {exc}", flush=True)
+                print(f"[Stream Chunk {chunk_num}] last_id={last_id} stats={stream_stats}", flush=True)
+        finally:
+            conn_stream.close()
+        if stream_by_pair:
+            print_pair_aggregate_summary(stream_by_pair, stream_totals)
+        if nim.channels:
+            print(f"\n{nim.format_channel_stats()}", flush=True)
+        print(f"[Total Elapsed] {time.perf_counter() - t_start:.2f}s", flush=True)
+        return 1 if stream_stats["failed"] > 0 else 0
 
     audit_path = Path(args.audit_file)
     if not audit_path.is_absolute():
@@ -1422,9 +2090,9 @@ def main() -> int:
                 if args.mode == "junk":
                     rows = fetch_suspicious_db_terms(conn, limit=0)
                 elif args.mode == "anomalies":
-                    rows = fetch_anomaly_db_terms(conn, limit=args.limit or 500, offset=args.offset, lang_pair_filter=lang_pair_filter)
+                    rows = fetch_anomaly_db_terms(conn, limit=args.limit, offset=args.offset, lang_pair_filter=lang_pair_filter)
                 elif args.mode == "all":
-                    rows = fetch_all_db_terms(conn, limit=args.limit or 500, offset=args.offset, lang_pair_filter=lang_pair_filter)
+                    rows = fetch_all_db_terms(conn, limit=args.limit, offset=args.offset, lang_pair_filter=lang_pair_filter)
                 elif args.mode == "pairs":
                     rows = fetch_stratified_lang_pair_terms(conn, per_pair=args.per_pair, lang_pair_filter=lang_pair_filter)
 
@@ -1544,25 +2212,9 @@ def main() -> int:
             stats = {"updated": 0, "merged": 0, "inserted": 0, "deleted": 0, "kept": 0, "dry_run": 0, "failed": 0}
             for akey, item in pending:
                 orig = item.get("original") or {}
-                prop = dict(item.get("proposed") or {})
+                prop = _apply_stage2_guards(orig, item.get("proposed") or {})
                 orig_text = orig.get("text") or ""
-                clean_hint = orig.get("clean_hint")
                 tid = orig.get("termId") or item.get("termId")
-
-                # Hard Stage-2 safeguards against false deletions or headword mutilation
-                if str(prop.get("action") or "KEEP").upper() == "DELETE" and (
-                    clean_hint or is_protected_headword(orig_text) or (
-                        orig.get("definitions") and classify_headword(orig_text, orig.get("lang", "DE"), orig.get("partOfSpeech"), orig.get("definitions"))[0] == "keep"
-                    )
-                ):
-                    prop["action"] = "FIX"
-                    prop["verdict"] = "NEEDS_FIX"
-                    prop["text"] = clean_hint or orig_text
-                    prop["reason"] = f"guarded_fix_from_delete: {prop.get('reason') or ''}".strip()
-                if is_protected_headword(orig_text):
-                    prop["text"] = orig_text
-                elif clean_hint and not prop.get("text"):
-                    prop["text"] = clean_hint
                 item["proposed"] = prop
                 for vr_idx, (vo, _vp) in enumerate(verified_records):
                     if vo.get("auditKey") == akey:
@@ -1570,35 +2222,8 @@ def main() -> int:
                         break
 
                 try:
-                    act_upper = str(prop.get("action") or "KEEP").upper()
-                    if act_upper == "DELETE":
-                        res = purge_junk_row_tx(conn, orig, [prop.get("reason") or "llm_flagged_junk"], dry_run=args.dry_run)
-                        if args.dry_run:
-                            stats["dry_run"] += 1
-                        else:
-                            stats["deleted"] += 1
-                    elif not orig.get("inDb", True) or str(tid).startswith(("pdf:", "json:")):
-                        res = upsert_external_term_tx(conn, orig, prop, dry_run=args.dry_run)
-                        if args.dry_run:
-                            stats["dry_run"] += 1
-                        elif "inserted" in res:
-                            stats["inserted"] += 1
-                        else:
-                            stats["updated"] += 1
-                    elif act_upper == "KEEP" and str(prop.get("verdict") or "").upper() == "CORRECT":
-                        res = apply_fix_row_tx(conn, tid, {**orig, **prop, "text": orig_text}, dry_run=args.dry_run)
-                        if args.dry_run:
-                            stats["dry_run"] += 1
-                        else:
-                            stats["kept"] += 1
-                    else:
-                        res = apply_fix_row_tx(conn, tid, prop, dry_run=args.dry_run)
-                        if args.dry_run:
-                            stats["dry_run"] += 1
-                        elif "merged_into" in res:
-                            stats["merged"] += 1
-                        else:
-                            stats["updated"] += 1
+                    skey, res, _ = _apply_sql_item_tx(conn, orig, prop, dry_run=args.dry_run)
+                    stats[skey] += 1
 
                     if not args.dry_run:
                         item["applied"] = True

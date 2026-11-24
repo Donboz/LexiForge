@@ -2,12 +2,16 @@
 # -*- coding: utf-8 -*-
 """Unit tests for LexiForge lexical filtering, sanitization, response parsing, and CLI tools."""
 
+import argparse
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
+
+import psycopg2
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
@@ -25,7 +29,13 @@ from handlers.lexical_filter import (  # noqa: E402
     sanitize_grammar_fields,
 )
 from handlers.fallback_chain import parse_json_response  # noqa: E402
-from scripts.nim_sql_sync import NimPool, parse_glossa_pdf_text  # noqa: E402
+from scripts.nim_sql_sync import (  # noqa: E402
+    NimPool,
+    _apply_stage2_guards,
+    _run_tx_with_retry,
+    parse_glossa_pdf_text,
+    run_pair_sweep_engine,
+)
 
 
 class TestLexicalFilter(unittest.TestCase):
@@ -348,6 +358,186 @@ class TestResponseParserAndCLI(unittest.TestCase):
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
+
+
+class TestSweepAndGuards(unittest.TestCase):
+    def test_apply_stage2_guards_protects_valid_and_clean_hint_terms(self):
+        # 1. Protected headword cannot be deleted or altered
+        g1 = _apply_stage2_guards(
+            {"text": "11. September", "lang": "DE", "partOfSpeech": "NOUN", "definitions": [{"meaning": "11 Eylül"}]},
+            {"action": "DELETE", "verdict": "DELETE", "text": None, "reason": "ordinal fragment"},
+        )
+        self.assertEqual(g1["action"], "FIX")
+        self.assertEqual(g1["text"], "11. September")
+
+        # 2. Chemical locant cannot be stripped or deleted
+        g2 = _apply_stage2_guards(
+            {"text": "1-Propanol", "lang": "DE", "partOfSpeech": "NOUN", "definitions": [{"meaning": "1-propanol"}]},
+            {"action": "FIX", "text": "Propanol"},
+        )
+        self.assertEqual(g2["text"], "1-Propanol")
+
+        # 3. clean_hint overrides DELETE
+        g3 = _apply_stage2_guards(
+            {"text": "150daher", "clean_hint": "daher", "lang": "DE", "definitions": [{"meaning": "therefore"}]},
+            {"action": "DELETE", "text": None},
+        )
+        self.assertEqual(g3["action"], "FIX")
+        self.assertEqual(g3["text"], "daher")
+
+        # 4. Pure junk ("11th") IS allowed to be deleted
+        g4 = _apply_stage2_guards(
+            {"text": "11th", "lang": "EN", "definitions": [{"meaning": "11th"}]},
+            {"action": "DELETE", "reason": "ordinal"},
+        )
+        self.assertEqual(g4["action"], "DELETE")
+
+    def test_run_tx_with_retry_handles_deadlock(self):
+        attempts = {"count": 0}
+        mock_conn = mock.MagicMock()
+
+        def flaky_tx(_conn, dry_run=False):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise psycopg2.errors.DeadlockDetected("deadlock detected")
+            return "updated"
+
+        res = _run_tx_with_retry(mock_conn, flaky_tx, dry_run=False)
+        self.assertEqual(res, "updated")
+        self.assertEqual(attempts["count"], 2)
+        self.assertEqual(mock_conn.rollback.call_count, 1)
+
+    def test_run_pair_sweep_engine_12_pairs_unlimited_resumable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = os.path.join(tmpdir, "state.json")
+            jsonl_file = os.path.join(tmpdir, "audit.jsonl")
+
+            # Build 12 pairs, each with 3 rows (2 chunks when chunk_size=2): 1 junk + 2 real terms
+            pair_defs = [(f"L{i}", "TR") for i in range(12)]
+            synthetic_db = {}
+            for src, tgt in pair_defs:
+                rows = [
+                    {
+                        "termId": f"{src}-{tgt}-1",
+                        "auditKey": f"{src}-{tgt}-1@{tgt}",
+                        "inDb": True,
+                        "text": "11th",
+                        "lang": "EN",
+                        "targetLang": tgt,
+                        "pair": f"{src}->{tgt}",
+                        "partOfSpeech": None,
+                        "gender": None,
+                        "article": None,
+                        "plural": None,
+                        "level": "UNKNOWN",
+                        "primaryDomain": "GENERAL",
+                        "definitions": [{"id": f"d-{src}-1", "meaning": "11th", "language": tgt, "domain": "GENERAL", "register": "NEUTRAL"}],
+                    },
+                    {
+                        "termId": f"{src}-{tgt}-2",
+                        "auditKey": f"{src}-{tgt}-2@{tgt}",
+                        "inDb": True,
+                        "text": f"word_{src}_a",
+                        "lang": "DE",
+                        "targetLang": tgt,
+                        "pair": f"{src}->{tgt}",
+                        "partOfSpeech": "NOUN",
+                        "gender": "NEUTER",
+                        "article": "das",
+                        "plural": None,
+                        "level": "B1",
+                        "primaryDomain": "GENERAL",
+                        "definitions": [{"id": f"d-{src}-2", "meaning": "kelime a", "language": tgt, "domain": "GENERAL", "register": "NEUTRAL"}],
+                    },
+                    {
+                        "termId": f"{src}-{tgt}-3",
+                        "auditKey": f"{src}-{tgt}-3@{tgt}",
+                        "inDb": True,
+                        "text": f"word_{src}_b",
+                        "lang": "DE",
+                        "targetLang": tgt,
+                        "pair": f"{src}->{tgt}",
+                        "partOfSpeech": "VERB",
+                        "gender": None,
+                        "article": None,
+                        "plural": None,
+                        "level": "B2",
+                        "primaryDomain": "TECHNICAL",
+                        "definitions": [{"id": f"d-{src}-3", "meaning": "kelime b", "language": tgt, "domain": "TECHNICAL", "register": "NEUTRAL"}],
+                    },
+                ]
+                synthetic_db[(src, tgt)] = rows
+
+            def fake_discover(_conn, lang_pair_filter=None):
+                return [(s, t, 3) for s, t in pair_defs]
+
+            def fake_fetch_chunk(_conn, src_lang, tgt_lang, last_id="", chunk_size=50, recheck=False):
+                items = [r for r in synthetic_db[(src_lang, tgt_lang)] if r["termId"] > (last_id or "")]
+                return [dict(x) for x in items[:chunk_size]]
+
+            class FakeNim:
+                channels = [{"id": "mock#k1", "ok": 0, "err": 0, "rl429": 0, "total_ms": 0.0}]
+
+                def chat_json(self, _sys, user_prompt):
+                    payload = json.loads(user_prompt.split("\n", 1)[1])
+                    resp = [
+                        {
+                            "termId": x["termId"],
+                            "verdict": "CORRECT",
+                            "action": "KEEP",
+                            "langValid": True,
+                            "grammarValid": True,
+                            "issues": [],
+                            "text": x["text"],
+                            "lang": x["lang"],
+                            "partOfSpeech": x.get("partOfSpeech") or "NOUN",
+                            "level": x.get("level") or "B1",
+                            "primaryDomain": x.get("primaryDomain") or "GENERAL",
+                            "definitions": x.get("definitions") or [],
+                        }
+                        for x in payload
+                    ]
+                    return resp, "mock#k1"
+
+                def format_channel_stats(self):
+                    return "mock stats"
+
+            args = argparse.Namespace(
+                source="db",
+                mode="sweep",
+                chunk_size=2,
+                batch_size=2,
+                workers=4,
+                limit=0,
+                purge_junk=True,
+                dry_run=False,
+                recheck=False,
+                reset_state=False,
+                state_file=state_file,
+                jsonl_log=jsonl_file,
+                report_file=None,
+            )
+
+            with (
+                mock.patch("scripts.nim_sql_sync.psycopg2.connect", side_effect=lambda *_a, **_kw: mock.MagicMock()),
+                mock.patch("scripts.nim_sql_sync.discover_db_lang_pairs", side_effect=fake_discover),
+                mock.patch("scripts.nim_sql_sync.fetch_pair_chunk", side_effect=fake_fetch_chunk),
+                mock.patch("scripts.nim_sql_sync.purge_junk_row_tx", return_value="deleted:ordinal_or_bare_number"),
+                mock.patch("scripts.nim_sql_sync.apply_fix_row_tx", return_value="updated"),
+            ):
+                rc = run_pair_sweep_engine(args, "postgres://mock", FakeNim(), None, 0.0)
+
+            self.assertEqual(rc, 0)
+            state_data = json.loads(open(state_file, encoding="utf-8").read())
+            self.assertEqual(len(state_data["pairs"]), 12)
+            for src, tgt in pair_defs:
+                st = state_data["pairs"][f"{src}->{tgt}"]
+                self.assertTrue(st["done"])
+                self.assertEqual(st["deleted"], 1)
+                self.assertEqual(st["kept"], 2)
+
+            lines = open(jsonl_file, encoding="utf-8").read().splitlines()
+            self.assertEqual(len(lines), 36)
 
 
 if __name__ == "__main__":

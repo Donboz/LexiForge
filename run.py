@@ -31,7 +31,8 @@ CHOICES = [
     "9. Test Redis Connection / Redis Bağlantı Testi (test_redis)",
     "10. Fetch Models / Modelleri Güncelle (fetch_models)",
     "11. NVIDIA NIM Audit & PostgreSQL Sync (nim_sql_sync)",
-    "12. Quit / Çıkış (quit)",
+    "12. Full 34-Pair 10-Worker Auto Sweep / 34 Dil Çifti 10 Worker Tam Temizlik (nim_sweep)",
+    "13. Quit / Çıkış (quit)",
 ]
 
 
@@ -80,6 +81,17 @@ def main():
         "splitter": [sys.executable, os.path.join("scripts", "splitter.py")],
         "fetch_models": [sys.executable, os.path.join("scripts", "fetch_models.py")],
         "nim_sql_sync": [sys.executable, os.path.join("scripts", "nim_sql_sync.py")],
+        "nim_sweep": [
+            sys.executable,
+            os.path.join("scripts", "nim_sql_sync.py"),
+            "--source", "db",
+            "--mode", "sweep",
+            "--purge-junk",
+            "--limit", "0",
+            "--workers", "10",
+            "--batch-size", "5",
+            "--chunk-size", "50",
+        ],
     }
 
     key = None
@@ -101,6 +113,8 @@ def main():
         key = "splitter"
     elif "fetch_models" in choice:
         key = "fetch_models"
+    elif "nim_sweep" in choice:
+        key = "nim_sweep"
     elif "nim_sql_sync" in choice:
         key = "nim_sql_sync"
 
